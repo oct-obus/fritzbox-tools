@@ -38,6 +38,7 @@ jobs:
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: fritz-tools-ios
+          name: fritz-tools-ios.ipa
           path: flutter_app/fritz_tools.ipa
+          compression-level: 0
           retention-days: 90

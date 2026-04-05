@@ -65,7 +65,10 @@ class FritzProxy {
         // Login
         final loginResp = await http.post(
           Uri.parse('http://$host/login_sid.lua?version=2'),
-          headers: {'Accept': 'application/json'},
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
           body: 'username=${Uri.encodeComponent(username)}&response=${Uri.encodeComponent(response)}',
         );
         final loginData = json.decode(loginResp.body);
