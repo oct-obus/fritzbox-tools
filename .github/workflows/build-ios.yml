@@ -36,9 +36,9 @@ jobs:
           rm -rf Payload
 
       - name: Upload IPA artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fritz-tools-ios.ipa
           path: flutter_app/fritz_tools.ipa
-          compression-level: 0
+          archive: false
           retention-days: 90
