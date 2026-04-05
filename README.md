@@ -1,33 +1,47 @@
 # fritzbox-tools
 
-Standalone Python tools for interacting with the Fritz!Box router API.
+Standalone Python tools for interacting with the Fritz!Box router API. No external dependencies.
 
-## fritzbox_api.py
+## Scripts
 
-API client with PBKDF2 challenge-response authentication. No external dependencies.
+### fritzbox_api.py
 
-### Usage
+Fetch data from any `/api/v0/generic/` endpoint.
 
 ```bash
-# Fetch LAN device list (prompted for password)
-python3 fritzbox_api.py
-
-# Explicit credentials
-python3 fritzbox_api.py -u admin -p "password"
-
-# Different endpoint
-python3 fritzbox_api.py -e mesh
-
-# Save to file
-python3 fritzbox_api.py -o landevice.json
-
-# Reuse existing SID
-python3 fritzbox_api.py --sid ab0c7d67cc6f796c
+python3 fritzbox_api.py                        # fetch landevice data
+python3 fritzbox_api.py -e mesh                # fetch mesh topology
+python3 fritzbox_api.py -e nexus               # fetch nexus/mesh peer info
+python3 fritzbox_api.py -o devices.json        # save to file
+python3 fritzbox_api.py --sid ab0c7d67cc6f796c # reuse existing session
 ```
 
-### Auth flow
+### mesh_pair.py
 
-1. GET `/login_sid.lua?version=2` to get challenge
+Remotely initiate mesh pairing between Fritz!Box and repeaters without pressing physical WPS buttons.
+
+```bash
+# Start mesh coupling + trigger WPS on repeater
+python3 mesh_pair.py -p "password" --repeater-ip 192.168.178.2
+
+# Start coupling on Fritz!Box only (press WPS on repeater manually)
+python3 mesh_pair.py -p "password" --master-only
+
+# Check WPS status
+python3 mesh_pair.py -p "password" --wps-info --repeater-ip 192.168.178.2
+```
+
+### fritzbox_auth.py
+
+Shared auth module used by the other scripts. Provides:
+- PBKDF2 v2 + MD5 v1 challenge-response authentication
+- REST API helpers (GET, PUT)
+- TR-064 SOAP client with HTTP Digest auth
+
+## Auth flow
+
+1. `GET /login_sid.lua?version=2` to get challenge
 2. PBKDF2-SHA256 two-pass response generation
-3. POST credentials to get SID
-4. Use SID for API requests
+3. `POST` credentials to get SID
+4. Use SID for API requests via `AUTHORIZATION: AVM-SID <sid>` header
+
