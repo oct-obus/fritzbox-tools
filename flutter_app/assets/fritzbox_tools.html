@@ -146,6 +146,10 @@
     </div>
     <label>Password</label>
     <input type="password" id="password" placeholder="Fritz!Box password">
+    <label style="display:flex; align-items:center; gap:6px; margin-bottom:8px; cursor:pointer;">
+      <input type="checkbox" id="remember" style="width:auto; margin:0;" onchange="toggleRemember()">
+      <span>Remember credentials</span>
+    </label>
     <button class="primary" id="btn-login" onclick="doLogin()">Connect</button>
     <button id="btn-logout" onclick="doLogout()" style="display:none; margin-left: 6px;">Disconnect</button>
     <div class="status" id="login-status"></div>
@@ -199,6 +203,42 @@ let polling = false;
 let pollTimer = null;
 let initialPeers = new Set();
 
+function loadSaved() {
+  try {
+    const saved = localStorage.getItem('fritz_creds');
+    if (saved) {
+      const c = JSON.parse(saved);
+      document.getElementById('host').value = c.host || 'fritz.box';
+      document.getElementById('username').value = c.username || '';
+      document.getElementById('password').value = c.password || '';
+      document.getElementById('remember').checked = true;
+    }
+  } catch (e) {}
+}
+
+function saveCredentials() {
+  if (document.getElementById('remember').checked) {
+    localStorage.setItem('fritz_creds', JSON.stringify({
+      host: document.getElementById('host').value.trim(),
+      username: document.getElementById('username').value.trim(),
+      password: document.getElementById('password').value,
+    }));
+  }
+}
+
+function clearCredentials() {
+  localStorage.removeItem('fritz_creds');
+  document.getElementById('remember').checked = false;
+}
+
+function toggleRemember() {
+  if (!document.getElementById('remember').checked) {
+    clearCredentials();
+  }
+}
+
+loadSaved();
+
 function proxyUrl(host, path) {
   return PROXY_BASE + '/proxy/' + encodeURIComponent(host) + path;
 }
@@ -229,6 +269,7 @@ async function doLogin() {
     if (data.error) throw new Error(data.error);
     currentSid = data.sid;
     currentHost = host;
+    saveCredentials();
     setStatus('login-status', 'Connected. SID: ' + currentSid, 'ok');
     document.getElementById('btn-logout').style.display = 'inline-block';
     document.getElementById('tabs').style.display = 'flex';
@@ -244,11 +285,14 @@ async function doLogin() {
 function doLogout() {
   currentSid = null;
   currentHost = null;
-  setStatus('login-status', '', '');
+  stopPoll();
+  setStatus('login-status', 'Disconnected.', '');
   document.getElementById('btn-logout').style.display = 'none';
   document.getElementById('tabs').style.display = 'none';
   document.getElementById('devices-card').style.display = 'none';
   document.getElementById('mesh-card').style.display = 'none';
+  document.getElementById('devices-content').innerHTML = '<div class="empty">Loading...</div>';
+  document.getElementById('device-count').textContent = '';
 }
 
 async function loadDevices() {
