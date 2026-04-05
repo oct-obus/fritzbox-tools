@@ -21,6 +21,14 @@ jobs:
         with:
           flutter-version: '3.32.0'
           channel: 'stable'
+          cache: true
+
+      - name: Cache CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: flutter_app/ios/Pods
+          key: pods-${{ hashFiles('flutter_app/ios/Podfile.lock') }}
+          restore-keys: pods-
 
       - name: Install dependencies
         run: flutter pub get
