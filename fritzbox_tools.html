@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fritz!Box Tools</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --orange: #d29922;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+    -webkit-text-size-adjust: 100%;
+  }
+  .container { max-width: 960px; margin: 0 auto; padding: 20px 16px; }
+  h1 { font-size: 22px; margin-bottom: 2px; }
+  .subtitle { color: var(--text-dim); font-size: 13px; margin-bottom: 20px; }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 14px;
+  }
+  .card h2 { font-size: 15px; margin-bottom: 10px; }
+  label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 3px; }
+  input[type="text"], input[type="password"] {
+    width: 100%;
+    padding: 8px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 16px; /* prevents iOS zoom */
+    margin-bottom: 10px;
+    -webkit-appearance: none;
+  }
+  input:focus { outline: none; border-color: var(--accent); }
+  .row { display: flex; gap: 10px; }
+  .row > div { flex: 1; }
+  button {
+    padding: 8px 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text);
+    font-size: 14px;
+    cursor: pointer;
+    -webkit-appearance: none;
+    touch-action: manipulation;
+  }
+  button:active { opacity: 0.8; }
+  button.primary { background: #238636; border-color: rgba(240,246,252,0.1); color: #fff; }
+  button.danger { background: #da3633; border-color: rgba(240,246,252,0.1); color: #fff; }
+  button:disabled { opacity: 0.4; }
+  .status { font-size: 12px; margin-top: 6px; word-break: break-all; }
+  .status.ok { color: var(--green); }
+  .status.err { color: var(--red); }
+  .status.warn { color: var(--orange); }
+
+  /* Device list */
+  .device-list { margin-top: 10px; }
+  .device-item {
+    display: flex;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+    gap: 10px;
+  }
+  .device-item:last-child { border-bottom: none; }
+  .device-info { flex: 1; min-width: 0; }
+  .device-name { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .device-detail { font-size: 12px; color: var(--text-dim); font-family: monospace; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .dot.on { background: var(--green); }
+  .dot.off { background: var(--text-dim); }
+  .tag {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 500;
+    flex-shrink: 0;
+  }
+  .tag.mesh { background: rgba(88,166,255,0.15); color: var(--accent); }
+  .tag.type { background: rgba(139,148,158,0.1); color: var(--text-dim); }
+  .empty { text-align: center; padding: 24px; color: var(--text-dim); font-size: 13px; }
+  .flex-between { display: flex; justify-content: space-between; align-items: center; }
+  .count { font-size: 12px; color: var(--text-dim); }
+
+  /* Mesh section */
+  .log {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px;
+    font-family: monospace;
+    font-size: 12px;
+    max-height: 180px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    color: var(--text-dim);
+    margin-top: 10px;
+    display: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 0; margin-bottom: 14px; border-bottom: 1px solid var(--border); }
+  .tab {
+    padding: 8px 16px;
+    font-size: 13px;
+    color: var(--text-dim);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+  }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+
+  @media (max-width: 600px) {
+    .row { flex-direction: column; gap: 0; }
+    .container { padding: 12px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Fritz!Box Tools</h1>
+  <p class="subtitle">Device list and mesh pairing</p>
+
+  <!-- Login -->
+  <div class="card" id="login-card">
+    <h2>Connect</h2>
+    <div class="row">
+      <div>
+        <label>Host</label>
+        <input type="text" id="host" value="fritz.box">
+      </div>
+      <div>
+        <label>Username</label>
+        <input type="text" id="username" value="" placeholder="(optional)">
+      </div>
+    </div>
+    <label>Password</label>
+    <input type="password" id="password" placeholder="Fritz!Box password">
+    <button class="primary" id="btn-login" onclick="doLogin()">Connect</button>
+    <button id="btn-logout" onclick="doLogout()" style="display:none; margin-left: 6px;">Disconnect</button>
+    <div class="status" id="login-status"></div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs" id="tabs" style="display:none;">
+    <div class="tab active" onclick="switchTab('devices')">Devices</div>
+    <div class="tab" onclick="switchTab('mesh')">Mesh</div>
+  </div>
+
+  <!-- Devices -->
+  <div class="card" id="devices-card" style="display:none;">
+    <div class="flex-between">
+      <h2>LAN Devices <span class="count" id="device-count"></span></h2>
+      <button onclick="loadDevices()">Refresh</button>
+    </div>
+    <div class="device-list" id="devices-content">
+      <div class="empty">Loading...</div>
+    </div>
+  </div>
+
+  <!-- Mesh Pairing -->
+  <div class="card" id="mesh-card" style="display:none;">
+    <h2>Mesh Pairing</h2>
+    <p style="font-size: 12px; color: var(--text-dim); margin-bottom: 10px;">
+      Start mesh coupling on the Fritz!Box. Optionally trigger WPS on a repeater via TR-064.
+    </p>
+    <div class="row">
+      <div>
+        <label>Repeater IP (optional)</label>
+        <input type="text" id="repeater-ip" placeholder="192.168.178.2">
+      </div>
+      <div>
+        <label>Repeater Password</label>
+        <input type="password" id="repeater-pw" placeholder="(uses main if empty)">
+      </div>
+    </div>
+    <button class="primary" id="btn-mesh" onclick="startMesh()">Start Mesh Coupling</button>
+    <button id="btn-mesh-stop" onclick="stopPoll()" style="display:none; margin-left: 6px;">Stop</button>
+    <div class="status" id="mesh-status"></div>
+    <div class="log" id="mesh-log"></div>
+  </div>
+</div>
+
+<script>
+// State
+let currentSid = null;
+let currentHost = null;
+let polling = false;
+let pollTimer = null;
+let initialPeers = new Set();
+
+// --- Crypto helpers ---
+
+function hexToBytes(hex) {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2)
+    bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
+  return bytes;
+}
+
+function bytesToHex(bytes) {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function pbkdf2(password, salt, iterations, dkLen) {
+  const enc = typeof password === 'string' ? new TextEncoder().encode(password) : password;
+  const key = await crypto.subtle.importKey('raw', enc, 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: salt, iterations: iterations, hash: 'SHA-256' },
+    key, dkLen * 8
+  );
+  return new Uint8Array(bits);
+}
+
+async function solveChallengeV2(challenge, password) {
+  const parts = challenge.split('$');
+  if (parts[0] !== '2') throw new Error('Unsupported challenge version: ' + parts[0]);
+  const iter1 = parseInt(parts[1]);
+  const salt1 = hexToBytes(parts[2]);
+  const iter2 = parseInt(parts[3]);
+  const salt2 = hexToBytes(parts[4]);
+  const key1 = await pbkdf2(password, salt1, iter1, 32);
+  const key2 = await pbkdf2(key1, salt2, iter2, 32);
+  return bytesToHex(salt2) + '$' + bytesToHex(key2);
+}
+
+// MD5 for legacy auth (minimal implementation)
+function md5(input) {
+  // Convert string to UTF-16LE byte array
+  const bytes = typeof input === 'string' ? new TextEncoder().encode(input) : input;
+  function md5cycle(x, k) {
+    let a = x[0], b = x[1], c = x[2], d = x[3];
+    a = ff(a,b,c,d,k[0],7,-680876936);d = ff(d,a,b,c,k[1],12,-389564586);c = ff(c,d,a,b,k[2],17,606105819);b = ff(b,c,d,a,k[3],22,-1044525330);
+    a = ff(a,b,c,d,k[4],7,-176418897);d = ff(d,a,b,c,k[5],12,1200080426);c = ff(c,d,a,b,k[6],17,-1473231341);b = ff(b,c,d,a,k[7],22,-45705983);
+    a = ff(a,b,c,d,k[8],7,1770035416);d = ff(d,a,b,c,k[9],12,-1958414417);c = ff(c,d,a,b,k[10],17,-42063);b = ff(b,c,d,a,k[11],22,-1990404162);
+    a = ff(a,b,c,d,k[12],7,1804603682);d = ff(d,a,b,c,k[13],12,-40341101);c = ff(c,d,a,b,k[14],17,-1502002290);b = ff(b,c,d,a,k[15],22,1236535329);
+    a = gg(a,b,c,d,k[1],5,-165796510);d = gg(d,a,b,c,k[6],9,-1069501632);c = gg(c,d,a,b,k[11],14,643717713);b = gg(b,c,d,a,k[0],20,-373897302);
+    a = gg(a,b,c,d,k[5],5,-701558691);d = gg(d,a,b,c,k[10],9,38016083);c = gg(c,d,a,b,k[15],14,-660478335);b = gg(b,c,d,a,k[4],20,-405537848);
+    a = gg(a,b,c,d,k[9],5,568446438);d = gg(d,a,b,c,k[14],9,-1019803690);c = gg(c,d,a,b,k[3],14,-187363961);b = gg(b,c,d,a,k[8],20,1163531501);
+    a = gg(a,b,c,d,k[13],5,-1444681467);d = gg(d,a,b,c,k[2],9,-51403784);c = gg(c,d,a,b,k[7],14,1735328473);b = gg(b,c,d,a,k[12],20,-1926607734);
+    a = hh(a,b,c,d,k[5],4,-378558);d = hh(d,a,b,c,k[8],11,-2022574463);c = hh(c,d,a,b,k[11],16,1839030562);b = hh(b,c,d,a,k[14],23,-35309556);
+    a = hh(a,b,c,d,k[1],4,-1530992060);d = hh(d,a,b,c,k[4],11,1272893353);c = hh(c,d,a,b,k[7],16,-155497632);b = hh(b,c,d,a,k[10],23,-1094730640);
+    a = hh(a,b,c,d,k[13],4,681279174);d = hh(d,a,b,c,k[0],11,-358537222);c = hh(c,d,a,b,k[3],16,-722521979);b = hh(b,c,d,a,k[6],23,76029189);
+    a = hh(a,b,c,d,k[9],4,-640364487);d = hh(d,a,b,c,k[12],11,-421815835);c = hh(c,d,a,b,k[15],16,530742520);b = hh(b,c,d,a,k[2],23,-995338651);
+    a = ii(a,b,c,d,k[0],6,-198630844);d = ii(d,a,b,c,k[7],10,1126891415);c = ii(c,d,a,b,k[14],15,-1416354905);b = ii(b,c,d,a,k[5],21,-57434055);
+    a = ii(a,b,c,d,k[12],6,1700485571);d = ii(d,a,b,c,k[3],10,-1894986606);c = ii(c,d,a,b,k[10],15,-1051523);b = ii(b,c,d,a,k[1],21,-2054922799);
+    a = ii(a,b,c,d,k[8],6,1873313359);d = ii(d,a,b,c,k[15],10,-30611744);c = ii(c,d,a,b,k[6],15,-1560198380);b = ii(b,c,d,a,k[13],21,1309151649);
+    a = ii(a,b,c,d,k[4],6,-145523070);d = ii(d,a,b,c,k[11],10,-1120210379);c = ii(c,d,a,b,k[2],15,718787259);b = ii(b,c,d,a,k[9],21,-343485551);
+    x[0] = add32(a,x[0]);x[1] = add32(b,x[1]);x[2] = add32(c,x[2]);x[3] = add32(d,x[3]);
+  }
+  function cmn(q,a,b,x,s,t){a = add32(add32(a,q),add32(x,t));return add32((a<<s)|(a>>>(32-s)),b);}
+  function ff(a,b,c,d,x,s,t){return cmn((b&c)|((~b)&d),a,b,x,s,t);}
+  function gg(a,b,c,d,x,s,t){return cmn((b&d)|(c&(~d)),a,b,x,s,t);}
+  function hh(a,b,c,d,x,s,t){return cmn(b^c^d,a,b,x,s,t);}
+  function ii(a,b,c,d,x,s,t){return cmn(c^(b|(~d)),a,b,x,s,t);}
+  function add32(a,b){return (a+b)&0xFFFFFFFF;}
+
+  const n = bytes.length;
+  let state = [1732584193,-271733879,-1732584194,271733878];
+  let tail = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
+  let i;
+  for (i = 64; i <= n; i += 64) {
+    let tmp = [];
+    for (let j = 0; j < 16; j++)
+      tmp[j] = bytes[i-64+j*4]|(bytes[i-64+j*4+1]<<8)|(bytes[i-64+j*4+2]<<16)|(bytes[i-64+j*4+3]<<24);
+    md5cycle(state, tmp);
+  }
+  for (let j = 0; j < 16; j++) tail[j] = 0;
+  for (i = i - 64; i < n; i++)
+    tail[i>>2] |= bytes[i] << ((i%4)<<3);
+  tail[i>>2] |= 0x80 << ((i%4)<<3);
+  if (i > 55) { md5cycle(state, tail); for (let j = 0; j < 16; j++) tail[j] = 0; }
+  tail[14] = n * 8;
+  md5cycle(state, tail);
+
+  let hex = '';
+  for (i = 0; i < 4; i++)
+    for (let j = 0; j < 4; j++)
+      hex += ((state[i] >> (j*8)) & 255).toString(16).padStart(2, '0');
+  return hex;
+}
+
+function solveChallengeV1(challenge, password) {
+  const str = challenge + '-' + password;
+  // Encode as UTF-16LE
+  const utf16le = new Uint8Array(str.length * 2);
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i);
+    utf16le[i*2] = c & 0xff;
+    utf16le[i*2+1] = (c >> 8) & 0xff;
+  }
+  return challenge + '-' + md5(utf16le);
+}
+
+// --- Fritz!Box API (direct from browser) ---
+
+async function fritzFetch(url, opts = {}) {
+  const resp = await fetch(url, { ...opts, mode: 'cors' });
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  return resp;
+}
+
+async function getSessionInfo(host) {
+  const url = 'http://' + host + '/login_sid.lua?version=2';
+  const resp = await fritzFetch(url);
+  const data = await resp.json();
+  const si = data.sessionInfo || data;
+  return {
+    sid: si.sid || si.SID,
+    challenge: si.challenge || si.Challenge,
+    blockTime: si.blockTime || si.BlockTime || 0,
+  };
+}
+
+async function fritzLogin(host, username, password) {
+  const info = await getSessionInfo(host);
+  if (info.sid && info.sid !== '0000000000000000') return info.sid;
+  if (info.blockTime > 0) throw new Error('Login blocked for ' + info.blockTime + 's');
+
+  const challenge = info.challenge;
+  let response;
+  if (challenge.includes('$')) {
+    response = await solveChallengeV2(challenge, password);
+  } else {
+    response = solveChallengeV1(challenge, password);
+  }
+
+  const body = 'username=' + encodeURIComponent(username) + '&response=' + encodeURIComponent(response);
+  const url = 'http://' + host + '/login_sid.lua?version=2';
+  const resp = await fritzFetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body,
+  });
+  const data = await resp.json();
+  const sid = (data.sessionInfo || data).sid || (data.sessionInfo || data).SID;
+  if (!sid || sid === '0000000000000000') {
+    const bt = (data.sessionInfo || data).blockTime || 0;
+    throw new Error('Login failed' + (bt ? ' (blocked ' + bt + 's)' : ''));
+  }
+  return sid;
+}
+
+async function apiGet(host, sid, endpoint) {
+  const url = 'http://' + host + '/api/v0/generic/' + endpoint;
+  const resp = await fritzFetch(url, {
+    headers: {
+      'AUTHORIZATION': 'AVM-SID ' + sid,
+      'Accept': 'application/json',
+    },
+  });
+  return resp.json();
+}
+
+async function apiPut(host, sid, endpoint, data) {
+  const url = 'http://' + host + '/api/v0/generic/' + endpoint;
+  const resp = await fritzFetch(url, {
+    method: 'PUT',
+    headers: {
+      'AUTHORIZATION': 'AVM-SID ' + sid,
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(data),
+  });
+  return resp.json();
+}
+
+// --- UI Logic ---
+
+function setStatus(id, msg, cls) {
+  const el = document.getElementById(id);
+  el.textContent = msg;
+  el.className = 'status ' + (cls || '');
+}
+
+function appendLog(msg) {
+  const el = document.getElementById('mesh-log');
+  el.style.display = 'block';
+  el.textContent += msg + '\n';
+  el.scrollTop = el.scrollHeight;
+}
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => {
+    if (t.textContent.toLowerCase().includes(name)) t.classList.add('active');
+  });
+  document.getElementById('devices-card').style.display = name === 'devices' ? 'block' : 'none';
+  document.getElementById('mesh-card').style.display = name === 'mesh' ? 'block' : 'none';
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+async function doLogin() {
+  const host = document.getElementById('host').value.trim();
+  const username = document.getElementById('username').value.trim();
+  const password = document.getElementById('password').value;
+  if (!host || !password) { setStatus('login-status', 'Host and password required.', 'err'); return; }
+
+  document.getElementById('btn-login').disabled = true;
+  setStatus('login-status', 'Connecting...', 'warn');
+
+  try {
+    currentSid = await fritzLogin(host, username, password);
+    currentHost = host;
+    setStatus('login-status', 'Connected. SID: ' + currentSid, 'ok');
+    document.getElementById('btn-logout').style.display = 'inline-block';
+    document.getElementById('tabs').style.display = 'flex';
+    document.getElementById('devices-card').style.display = 'block';
+    loadDevices();
+  } catch (e) {
+    setStatus('login-status', 'Failed: ' + e.message, 'err');
+  } finally {
+    document.getElementById('btn-login').disabled = false;
+  }
+}
+
+function doLogout() {
+  currentSid = null;
+  currentHost = null;
+  setStatus('login-status', 'Disconnected.', '');
+  document.getElementById('btn-logout').style.display = 'none';
+  document.getElementById('tabs').style.display = 'none';
+  document.getElementById('devices-card').style.display = 'none';
+  document.getElementById('mesh-card').style.display = 'none';
+}
+
+async function loadDevices() {
+  if (!currentSid || !currentHost) return;
+  const el = document.getElementById('devices-content');
+  el.innerHTML = '<div class="empty">Loading...</div>';
+
+  try {
+    const data = await apiGet(currentHost, currentSid, 'landevice');
+    renderDevices(data);
+  } catch (e) {
+    el.innerHTML = '<div class="empty">Failed: ' + esc(e.message) + '</div>';
+  }
+}
+
+function parseDeviceList(data) {
+  let list = data.landevice || data.devices || data;
+  if (list && typeof list === 'object' && !Array.isArray(list)) list = list.device || [];
+  if (Array.isArray(list) && list.length && list[0] && list[0].device) list = list[0].device;
+  if (!Array.isArray(list)) return [];
+  return list.filter(d => typeof d === 'object').map(d => ({
+    name: d.name || d.hostname || '',
+    ip: d.ip || d.ipv4 || '',
+    mac: d.mac || '',
+    online: d.active === '1' || d.active === true || d.online === '1',
+    type: d.type || d.devtype || '',
+    mesh: d.mesh_state === '1' || d.is_mesh === '1',
+  }));
+}
+
+function renderDevices(data) {
+  const el = document.getElementById('devices-content');
+  const devices = parseDeviceList(data);
+
+  document.getElementById('device-count').textContent = '(' + devices.length + ')';
+
+  if (!devices.length) { el.innerHTML = '<div class="empty">No devices found.</div>'; return; }
+
+  // Sort: online first, then by name
+  devices.sort((a, b) => {
+    if (a.online !== b.online) return a.online ? -1 : 1;
+    return (a.name || '').localeCompare(b.name || '');
+  });
+
+  el.innerHTML = devices.map(d => {
+    const dot = d.online ? '<div class="dot on"></div>' : '<div class="dot off"></div>';
+    const mesh = d.mesh ? ' <span class="tag mesh">mesh</span>' : '';
+    const type = d.type ? '<span class="tag type">' + esc(d.type) + '</span>' : '';
+    return '<div class="device-item">' + dot +
+      '<div class="device-info"><div class="device-name">' + esc(d.name || '(unknown)') + '</div>' +
+      '<div class="device-detail">' + esc(d.ip || '-') + ' &middot; ' + esc(d.mac || '-') + '</div></div>' +
+      type + mesh + '</div>';
+  }).join('');
+}
+
+async function startMesh() {
+  if (!currentSid || !currentHost) { setStatus('mesh-status', 'Not connected.', 'err'); return; }
+
+  document.getElementById('btn-mesh').disabled = true;
+  document.getElementById('mesh-log').textContent = '';
+  document.getElementById('mesh-log').style.display = 'block';
+  setStatus('mesh-status', 'Starting...', 'warn');
+  appendLog('[' + time() + '] Starting mesh coupling on ' + currentHost);
+
+  try {
+    await apiPut(currentHost, currentSid, 'nexus', { enhanced_trust_mode: '1' });
+    appendLog('[' + time() + '] Mesh coupling started.');
+
+    // Capture initial peers
+    try {
+      const nexus = await apiGet(currentHost, currentSid, 'nexus');
+      initialPeers = extractPeers(nexus);
+      appendLog('[' + time() + '] Current trusted peers: ' + initialPeers.size);
+    } catch (e) {
+      appendLog('[' + time() + '] Could not read initial peers: ' + e.message);
+    }
+
+    const repeaterIp = document.getElementById('repeater-ip').value.trim();
+    if (repeaterIp) {
+      appendLog('[' + time() + '] Note: TR-064 WPS trigger requires the Python server.');
+      appendLog('  Run: python3 mesh_pair.py --repeater-ip ' + repeaterIp);
+      appendLog('  Or press the WPS button on the repeater now.');
+    } else {
+      appendLog('[' + time() + '] Press WPS/Connect button on the repeater now.');
+    }
+
+    // Start polling
+    polling = true;
+    document.getElementById('btn-mesh-stop').style.display = 'inline-block';
+    setStatus('mesh-status', 'Waiting for new mesh peer...', 'warn');
+    pollMesh();
+  } catch (e) {
+    setStatus('mesh-status', 'Failed: ' + e.message, 'err');
+    appendLog('Error: ' + e.message);
+    document.getElementById('btn-mesh').disabled = false;
+  }
+}
+
+function extractPeers(nexus) {
+  const peers = new Set();
+  const peersData = nexus.peers || [];
+  if (Array.isArray(peersData) && peersData.length) {
+    const first = peersData[0] || {};
+    for (const peer of (first.peer || [])) {
+      if (peer.peer_trusted === '1' && peer.iam_trusted === '1' && peer.UID) {
+        peers.add(peer.UID);
+      }
+    }
+  }
+  return peers;
+}
+
+async function pollMesh() {
+  if (!polling) return;
+  try {
+    const nexus = await apiGet(currentHost, currentSid, 'nexus');
+    const current = extractPeers(nexus);
+    const newPeers = [...current].filter(p => !initialPeers.has(p));
+    if (newPeers.length) {
+      appendLog('[' + time() + '] New mesh peer(s): ' + newPeers.join(', '));
+      setStatus('mesh-status', 'Pairing successful!', 'ok');
+      stopPoll();
+      loadDevices();
+      return;
+    }
+    appendLog('[' + time() + '] Waiting... (' + current.size + ' trusted peers)');
+  } catch (e) {
+    appendLog('[' + time() + '] Poll error: ' + e.message);
+  }
+  if (polling) pollTimer = setTimeout(pollMesh, 5000);
+}
+
+function stopPoll() {
+  polling = false;
+  if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+  document.getElementById('btn-mesh').disabled = false;
+  document.getElementById('btn-mesh-stop').style.display = 'none';
+}
+
+function time() { return new Date().toLocaleTimeString(); }
+</script>
+</body>
+</html>
