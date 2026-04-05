@@ -31,6 +31,21 @@ python3 mesh_pair.py -p "password" --master-only
 python3 mesh_pair.py -p "password" --wps-info --repeater-ip 192.168.178.2
 ```
 
+### fritzbox_web.py
+
+Browser-based web UI for device list and mesh pairing. Runs a local HTTP server.
+
+```bash
+python3 fritzbox_web.py                    # start on localhost:8080
+python3 fritzbox_web.py --port 9000        # custom port
+python3 fritzbox_web.py --bind 0.0.0.0     # listen on all interfaces
+```
+
+Open http://localhost:8080 in your browser. Enter your Fritz!Box password to connect. Features:
+- View all LAN devices (name, IP, MAC, online status)
+- Start mesh coupling and optionally trigger WPS on a repeater
+- Poll for new mesh peers in real time
+
 ### fritzbox_auth.py
 
 Shared auth module used by the other scripts. Provides:
