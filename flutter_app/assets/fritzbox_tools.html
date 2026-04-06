@@ -164,6 +164,17 @@
   .tab.active { color: var(--text); border-bottom-color: var(--accent); }
   .device-item { cursor: pointer; }
   .device-item:active { background: rgba(255,255,255,0.03); }
+  .device-item.highlight-ap {
+    background: rgba(88,166,255,0.08);
+    border-left: 3px solid var(--accent);
+    padding-left: 5px;
+  }
+  .tree-item.highlight-ap {
+    background: rgba(88,166,255,0.08);
+    border-left: 3px solid var(--accent);
+    padding-left: 5px;
+    border-radius: 6px;
+  }
   .detail-overlay {
     position: fixed; top: 0; left: 0; right: 0; bottom: 0;
     background: rgba(0,0,0,0.7); z-index: 100;
@@ -251,6 +262,7 @@
     <div class="flex-between">
       <h2>LAN Devices <span class="count" id="device-count"></span></h2>
       <div style="display:flex; gap:6px; align-items:center;">
+        <button class="filter-btn" id="btn-highlight-ap" onclick="toggleHighlightAp()" style="display:none">My AP</button>
         <button class="filter-btn" id="btn-filter-repeaters" onclick="toggleRepeaterFilter()">Repeaters</button>
         <button onclick="loadDevices()">Refresh</button>
       </div>
@@ -312,6 +324,10 @@ let meshData = null;
 let allDevices = [];
 let showRepeatersOnly = false;
 let meshLoadError = null;
+let localIps = [];
+let myDeviceUid = null;
+let myApUid = null;
+let highlightAp = false;
 
 function loadSaved() {
   try {
@@ -384,6 +400,7 @@ async function doLogin() {
     document.getElementById('btn-logout').style.display = 'inline-block';
     document.getElementById('tabs').style.display = 'flex';
     document.getElementById('devices-card').style.display = 'block';
+    fetchLocalIps();
     loadDevices();
   } catch (e) {
     setStatus('login-status', 'Failed: ' + e.message, 'err');
@@ -425,6 +442,47 @@ async function loadMeshTopology() {
   } catch (e) {
     meshLoadError = e.message;
     return null;
+  }
+}
+
+async function fetchLocalIps() {
+  try {
+    const resp = await fetch(PROXY_BASE + '/local-ip');
+    const data = await resp.json();
+    localIps = data.ips || [];
+  } catch (e) {
+    localIps = [];
+  }
+}
+
+function detectMyDevice() {
+  myDeviceUid = null;
+  myApUid = null;
+  if (!localIps.length || !allDevices.length) return;
+  // Find the device whose IP matches one of our local IPs
+  for (const d of allDevices) {
+    if (d.ip && localIps.includes(d.ip)) {
+      myDeviceUid = d.uid;
+      // Find which AP/repeater this device connects to via its raw link_list
+      const raw = d.raw;
+      if (raw?.link_list && Array.isArray(raw.link_list) && raw.link_list.length) {
+        const entries = raw.link_list[0]?.entry || [];
+        for (const e of entries) {
+          if (e.is_uplink === '1' && e.remote_dev_mesh_uid) {
+            // Find the device with this mesh_uid
+            const ap = allDevices.find(ad => ad.raw?.mesh_UIDs === e.remote_dev_mesh_uid);
+            if (ap) {
+              myApUid = ap.uid;
+            } else if (e.remote_dev_mesh_uid === '1') {
+              // Connected to master — find master device
+              const master = allDevices.find(ad => ad.raw?.mesh_UIDs === '1' || (ad.raw?.flags || '').includes('ownentry'));
+              if (master) myApUid = master.uid;
+            }
+          }
+        }
+      }
+      break;
+    }
   }
 }
 
@@ -480,6 +538,7 @@ async function loadDevices() {
     meshData = mesh;
     const meshNodes = parseMeshNodes(mesh);
     allDevices = parseDeviceList(data, meshNodes);
+    detectMyDevice();
     renderFilteredDevices();
     // Also re-render tree if visible
     if (document.getElementById('tree-card').style.display !== 'none') renderTree();
@@ -603,6 +662,13 @@ function toggleRepeaterFilter() {
   renderFilteredDevices();
 }
 
+function toggleHighlightAp() {
+  highlightAp = !highlightAp;
+  document.getElementById('btn-highlight-ap').classList.toggle('active', highlightAp);
+  renderFilteredDevices();
+  if (document.getElementById('tree-card').style.display !== 'none') renderTree();
+}
+
 function renderFilteredDevices() {
   let devices = allDevices;
   if (showRepeatersOnly) {
@@ -618,6 +684,10 @@ function renderDevices(devices) {
     ? '(' + devices.length + ' repeater' + (devices.length !== 1 ? 's' : '') + ')'
     : '(' + allDevices.length + (repeaterCount ? ', ' + repeaterCount + ' repeater' + (repeaterCount !== 1 ? 's' : '') : '') + ')';
   document.getElementById('device-count').textContent = countText;
+
+  // Show "My AP" button if we detected which AP we're connected to
+  const highlightBtn = document.getElementById('btn-highlight-ap');
+  highlightBtn.style.display = myApUid ? '' : 'none';
 
   if (!devices.length) {
     el.innerHTML = '<div class="empty">' + (showRepeatersOnly ? 'No repeaters found.' : 'No devices found.') + '</div>';
@@ -643,6 +713,14 @@ function renderDevices(devices) {
       if (d.modelname) tags += '<span class="tag type">' + esc(d.modelname) + '</span>';
       else tags += '<span class="tag repeater">repeater</span>';
     }
+    const isMyAp = highlightAp && myApUid && d.uid === myApUid;
+    const isMe = highlightAp && myDeviceUid && d.uid === myDeviceUid;
+    const hlClass = isMyAp ? ' highlight-ap' : '';
+    let myTag = '';
+    if (isMyAp) myTag = '<span class="tag mesh">connected AP</span>';
+    if (isMe) myTag = '<span class="tag mesh">this device</span>';
+    if (myTag && tags) tags += myTag;
+    else if (myTag) tags = myTag;
     const tagsHtml = tags ? '<div class="device-tags">' + tags + '</div>' : '';
     const detail = esc(d.ip || '-') + ' &middot; ' + esc(d.mac || '-');
     let uplink = '';
@@ -651,7 +729,7 @@ function renderDevices(devices) {
     } else if (d.isRepeater && !d.isMeshed) {
       uplink = '<div class="uplink-info" style="color:var(--red);">not paired</div>';
     }
-    return '<div class="device-item" onclick="showDeviceDetail(\'' + esc(d.uid) + '\')">' + dot +
+    return '<div class="device-item' + hlClass + '" onclick="showDeviceDetail(\'' + esc(d.uid) + '\')">' + dot +
       '<div class="device-info"><div class="device-name">' + esc(d.name || '(unknown)') + '</div>' +
       '<div class="device-detail">' + detail + '</div>' + uplink + tagsHtml + '</div>' +
       '</div>';
@@ -900,13 +978,15 @@ function renderTree() {
     const clients = getConnectedClients(d);
     const childRepeaters = repeatersByUplink[d.UID] || [];
 
-    let html = '<div class="tree-item">';
+    const isHl = highlightAp && myApUid === d.UID;
+    let html = '<div class="tree-item' + (isHl ? ' highlight-ap' : '') + '">';
     html += '<div class="tree-header" onclick="showDeviceDetail(\'' + esc(d.UID || '') + '\')" style="cursor:pointer">';
     html += online ? '<span class="tree-icon-dot online"></span>' : '<span class="tree-icon-dot offline"></span>';
     html += '<div style="flex:1">';
     html += '<div class="tree-name">' + (online ? '' : '<span style="opacity:0.5">') + esc(name) + (online ? '' : '</span>');
     if (model) html += ' <span class="tag type">' + esc(model) + '</span>';
     html += isMeshed ? ' <span class="tag mesh">meshed</span>' : ' <span class="tag not-meshed">not meshed</span>';
+    if (isHl) html += ' <span class="tag mesh">connected AP</span>';
     html += '</div>';
     if (d.ip) html += '<div class="tree-detail">' + esc(d.ip) + '</div>';
     if (uplink) {
@@ -931,11 +1011,14 @@ function renderTree() {
   let html = '<div class="tree-node">';
 
   // Master node
-  html += '<div class="tree-item">';
+  const masterHl = highlightAp && myApUid && master && myApUid === master.UID;
+  html += '<div class="tree-item' + (masterHl ? ' highlight-ap' : '') + '">';
   html += '<div class="tree-header" onclick="showDeviceDetail(\'' + esc(master?.UID || '') + '\')" style="cursor:pointer">';
   html += '<span class="tree-icon-dot master"></span>';
   html += '<div style="flex:1">';
-  html += '<div class="tree-name">' + esc(master ? (master.friendly_name || master.name || 'Fritz!Box') : 'Fritz!Box') + ' <span class="tag mesh">master</span></div>';
+  html += '<div class="tree-name">' + esc(master ? (master.friendly_name || master.name || 'Fritz!Box') : 'Fritz!Box') + ' <span class="tag mesh">master</span>';
+  if (masterHl) html += ' <span class="tag mesh">connected AP</span>';
+  html += '</div>';
   if (master?.ip) html += '<div class="tree-detail">' + esc(master.ip) + '</div>';
   html += '</div></div>';
 

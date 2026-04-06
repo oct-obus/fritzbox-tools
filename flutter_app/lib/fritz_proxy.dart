@@ -28,6 +28,26 @@ class FritzProxy {
           headers: {'Content-Type': 'text/html; charset=utf-8'});
     });
 
+    // Return the device's local network IPs (for "you are here" feature)
+    router.get('/local-ip', (shelf.Request request) async {
+      try {
+        final interfaces = await NetworkInterface.list(
+          type: InternetAddressType.IPv4,
+        );
+        final ips = <String>[];
+        for (final iface in interfaces) {
+          for (final addr in iface.addresses) {
+            if (!addr.isLoopback) {
+              ips.add(addr.address);
+            }
+          }
+        }
+        return _jsonResponse({'ips': ips});
+      } catch (e) {
+        return _jsonResponse({'error': 'Failed to get local IPs: $e'});
+      }
+    });
+
     // Login endpoint: handles PBKDF2 auth
     router.post('/proxy/<host>/login', (shelf.Request request, String host) async {
       host = Uri.decodeComponent(host);
