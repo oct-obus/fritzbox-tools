@@ -441,7 +441,11 @@ async function loadDevices() {
     const meshNodes = parseMeshNodes(mesh);
     allDevices = parseDeviceList(data, meshNodes);
     renderFilteredDevices();
-    // Show mesh topology warning if applicable
+    // Also re-render tree if visible
+    if (document.getElementById('tree-card').style.display !== 'none') renderTree();
+  } catch (e) {
+    el.innerHTML = '<div class="empty">Failed: ' + esc(e.message) + '</div>';
+  } finally {
     const warnEl = document.getElementById('mesh-load-warning');
     if (meshLoadError) {
       warnEl.style.display = 'block';
@@ -450,10 +454,6 @@ async function loadDevices() {
     } else {
       warnEl.style.display = 'none';
     }
-    // Also re-render tree if visible
-    if (document.getElementById('tree-card').style.display !== 'none') renderTree();
-  } catch (e) {
-    el.innerHTML = '<div class="empty">Failed: ' + esc(e.message) + '</div>';
   }
 }
 
