@@ -12,6 +12,7 @@ import 'package:crypto/crypto.dart' show Hmac, sha256;
 /// Local HTTP server that serves the web UI and proxies Fritz!Box API calls.
 class FritzProxy {
   HttpServer? _server;
+  static const int _fixedPort = 8742;
   int _port = 0;
 
   int get port => _port;
@@ -181,8 +182,8 @@ class FritzProxy {
       }
     });
 
-    // Find available port
-    _port = await _findPort();
+    // Use fixed port so WebView localStorage persists across launches
+    _port = _fixedPort;
 
     final handler = const shelf.Pipeline()
         .addMiddleware(shelf.logRequests())
@@ -193,13 +194,6 @@ class FritzProxy {
 
   Future<void> stop() async {
     await _server?.close();
-  }
-
-  Future<int> _findPort() async {
-    final server = await ServerSocket.bind('127.0.0.1', 0);
-    final port = server.port;
-    await server.close();
-    return port;
   }
 
   shelf.Response _jsonResponse(Map<String, dynamic> data) {
