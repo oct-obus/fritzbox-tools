@@ -251,9 +251,19 @@
     <h2>Display</h2>
     <label>UI Scale</label>
     <div style="display:flex; align-items:center; gap:10px;">
-      <input type="range" id="ui-scale" min="0.8" max="1.4" step="0.1" value="1.0"
+      <input type="range" id="ui-scale" min="0.5" max="1.5" step="0.05" value="1.0"
         style="flex:1; accent-color:var(--accent);" oninput="applyScale(this.value)">
-      <span id="scale-value" style="font-size:12px; font-family:monospace; min-width:30px;">1.0</span>
+      <input type="number" id="scale-input" min="0.5" max="1.5" step="0.05" value="1.0"
+        style="width:55px; text-align:center; font-family:monospace; font-size:12px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:4px; padding:2px 4px;"
+        oninput="applyScale(this.value)">
+    </div>
+    <label style="margin-top:10px;">BSSID Poll Interval (seconds)</label>
+    <div style="display:flex; align-items:center; gap:10px;">
+      <input type="range" id="bssid-interval" min="1" max="30" step="1" value="5"
+        style="flex:1; accent-color:var(--accent);" oninput="applyBssidInterval(this.value)">
+      <input type="number" id="bssid-interval-input" min="1" max="60" step="1" value="5"
+        style="width:55px; text-align:center; font-family:monospace; font-size:12px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:4px; padding:2px 4px;"
+        oninput="applyBssidInterval(this.value)">
     </div>
   </div>
 
@@ -585,7 +595,7 @@ function matchBssidToAp() {
 function startBssidPolling() {
   if (bssidPollTimer) clearInterval(bssidPollTimer);
   fetchBssid();
-  bssidPollTimer = setInterval(() => fetchBssid(), 5000);
+  bssidPollTimer = setInterval(() => fetchBssid(), bssidIntervalSec * 1000);
 }
 
 function stopBssidPolling() {
@@ -1398,17 +1408,44 @@ function toggleSettings() {
 
 function applyScale(val) {
   val = parseFloat(val);
+  if (isNaN(val) || val < 0.5) val = 0.5;
+  if (val > 1.5) val = 1.5;
   document.querySelector('.container').style.zoom = val;
-  document.getElementById('scale-value').textContent = val.toFixed(1);
+  document.getElementById('scale-input').value = val;
   document.getElementById('ui-scale').value = val;
   localStorage.setItem('fritz_ui_scale', val.toString());
+}
+
+let bssidIntervalSec = 5;
+function applyBssidInterval(val) {
+  val = parseInt(val, 10);
+  if (isNaN(val) || val < 1) val = 1;
+  if (val > 60) val = 60;
+  bssidIntervalSec = val;
+  document.getElementById('bssid-interval').value = Math.min(val, 30);
+  document.getElementById('bssid-interval-input').value = val;
+  localStorage.setItem('fritz_bssid_interval', val.toString());
+  // Restart timer with new interval (without triggering immediate fetch)
+  if (bssidPollTimer) {
+    clearInterval(bssidPollTimer);
+    bssidPollTimer = setInterval(() => fetchBssid(), bssidIntervalSec * 1000);
+  }
 }
 
 (function loadScale() {
   const saved = localStorage.getItem('fritz_ui_scale');
   if (saved) {
     const val = parseFloat(saved);
-    if (val >= 0.8 && val <= 1.4) applyScale(val);
+    if (val >= 0.5 && val <= 1.5) applyScale(val);
+  }
+  const savedInterval = localStorage.getItem('fritz_bssid_interval');
+  if (savedInterval) {
+    const iv = parseInt(savedInterval, 10);
+    if (iv >= 1 && iv <= 60) {
+      bssidIntervalSec = iv;
+      document.getElementById('bssid-interval').value = Math.min(iv, 30);
+      document.getElementById('bssid-interval-input').value = iv;
+    }
   }
 })();
 
