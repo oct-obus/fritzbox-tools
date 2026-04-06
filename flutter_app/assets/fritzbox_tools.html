@@ -206,6 +206,32 @@
   .detail-row:active { background: rgba(63,185,80,0.15); }
   .detail-label { color: var(--text-dim); flex-shrink: 0; margin-right: 12px; }
   .detail-value { font-family: monospace; word-break: break-all; text-align: right; }
+  .mgr-repeater {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; margin-bottom: 8px;
+  }
+  .mgr-repeater.highlight-ap { border-left: 3px solid var(--accent); background: rgba(88,166,255,0.05); }
+  .mgr-header { display: flex; align-items: center; gap: 8px; }
+  .mgr-name { font-size: 13px; font-weight: 600; word-break: break-word; }
+  .mgr-meta { font-size: 11px; color: var(--text-dim); font-family: monospace; margin-top: 2px; }
+  .mgr-uplink { font-size: 10px; color: var(--text-dim); margin-top: 2px; }
+  .mgr-uplink .via { color: var(--accent); }
+  .mgr-clients-toggle {
+    font-size: 10px; color: var(--text-dim); margin-top: 4px;
+    cursor: pointer; user-select: none;
+  }
+  .mgr-clients-toggle:hover { color: var(--accent); }
+  .mgr-client-list { display: none; margin-top: 4px; padding-left: 8px; border-left: 1px solid var(--border); }
+  .mgr-client-list.expanded { display: block; }
+  .mgr-client {
+    font-size: 11px; color: var(--text-dim); padding: 2px 0;
+    display: flex; align-items: center; gap: 6px; cursor: pointer;
+  }
+  .mgr-note {
+    font-size: 10px; color: var(--text-dim); background: rgba(139,148,158,0.05);
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
+    margin-top: 8px; line-height: 1.6;
+  }
   @media (max-width: 600px) { .row { flex-direction: column; gap: 0; } }
 </style>
 </head>
@@ -255,7 +281,8 @@
   <div class="tabs" id="tabs" style="display:none;">
     <div class="tab active" data-tab="devices" onclick="switchTab('devices')">Devices</div>
     <div class="tab" data-tab="tree" onclick="switchTab('tree')">Tree</div>
-    <div class="tab" data-tab="mesh" onclick="switchTab('mesh')">Mesh</div>
+    <div class="tab" data-tab="manager" onclick="switchTab('manager')">Manager</div>
+    <div class="tab" data-tab="mesh" onclick="switchTab('mesh')">Pair</div>
   </div>
 
   <div class="card" id="devices-card" style="display:none;">
@@ -280,6 +307,21 @@
     </div>
     <div id="tree-content">
       <div class="empty">Loading...</div>
+    </div>
+  </div>
+
+  <div class="card" id="manager-card" style="display:none;">
+    <div class="flex-between">
+      <h2>Mesh Manager <span class="count" id="mgr-count"></span></h2>
+      <button onclick="loadDevices()">Refresh</button>
+    </div>
+    <div id="manager-content">
+      <div class="empty">Loading...</div>
+    </div>
+    <div class="mgr-note" id="mgr-note" style="display:none;">
+      Repeater uplink targets cannot be changed via API. To re-route a repeater
+      through a different node, use the repeater's own web UI:
+      Home Network &gt; Mesh &gt; Mesh Settings &gt; select upstream network.
     </div>
   </div>
 
@@ -421,6 +463,7 @@ function doLogout() {
   document.getElementById('tabs').style.display = 'none';
   document.getElementById('devices-card').style.display = 'none';
   document.getElementById('tree-card').style.display = 'none';
+  document.getElementById('manager-card').style.display = 'none';
   document.getElementById('mesh-card').style.display = 'none';
   document.getElementById('devices-content').innerHTML = '<div class="empty">Loading...</div>';
   document.getElementById('device-count').textContent = '';
@@ -540,8 +583,9 @@ async function loadDevices() {
     allDevices = parseDeviceList(data, meshNodes);
     detectMyDevice();
     renderFilteredDevices();
-    // Also re-render tree if visible
+    // Also re-render tree and manager if visible
     if (document.getElementById('tree-card').style.display !== 'none') renderTree();
+    if (document.getElementById('manager-card').style.display !== 'none') renderMeshManager();
   } catch (e) {
     el.innerHTML = '<div class="empty">Failed: ' + esc(e.message) + '</div>';
   } finally {
@@ -667,6 +711,7 @@ function toggleHighlightAp() {
   document.getElementById('btn-highlight-ap').classList.toggle('active', highlightAp);
   renderFilteredDevices();
   if (document.getElementById('tree-card').style.display !== 'none') renderTree();
+  if (document.getElementById('manager-card').style.display !== 'none') renderMeshManager();
 }
 
 function renderFilteredDevices() {
@@ -799,8 +844,10 @@ function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.getElementById('devices-card').style.display = name === 'devices' ? 'block' : 'none';
   document.getElementById('tree-card').style.display = name === 'tree' ? 'block' : 'none';
+  document.getElementById('manager-card').style.display = name === 'manager' ? 'block' : 'none';
   document.getElementById('mesh-card').style.display = name === 'mesh' ? 'block' : 'none';
   if (name === 'tree') renderTree();
+  if (name === 'manager') renderMeshManager();
 }
 
 function setStatus(id, msg, cls) {
@@ -1073,6 +1120,160 @@ function renderTree() {
 
   html += '</div>';
   el.innerHTML = html;
+}
+
+// --- Mesh Manager tab ---
+let mgrClientCounter = 0;
+
+function renderMeshManager() {
+  const el = document.getElementById('manager-content');
+  const noteEl = document.getElementById('mgr-note');
+  if (!allDevices.length) {
+    el.innerHTML = '<div class="empty">No data loaded. Connect first.</div>';
+    noteEl.style.display = 'none';
+    return;
+  }
+
+  const repeaters = allDevices.filter(d => d.isRepeater);
+  document.getElementById('mgr-count').textContent = '(' + repeaters.length + ')';
+
+  if (!repeaters.length) {
+    el.innerHTML = '<div class="empty">No repeaters found in the network.</div>';
+    noteEl.style.display = 'none';
+    return;
+  }
+
+  // Get raw device data for client lookups
+  let rawList = [];
+  if (rawLandeviceData) {
+    rawList = rawLandeviceData.landevice || rawLandeviceData.devices || rawLandeviceData;
+    if (rawList && typeof rawList === 'object' && !Array.isArray(rawList)) rawList = rawList.device || [];
+    if (Array.isArray(rawList) && rawList.length && rawList[0] && rawList[0].device) rawList = rawList[0].device;
+    if (!Array.isArray(rawList)) rawList = [];
+  }
+  const byMeshUid = {};
+  for (const d of rawList) {
+    if (d.mesh_UIDs) byMeshUid[d.mesh_UIDs] = d;
+  }
+  const repeaterUids = new Set(repeaters.map(d => d.uid));
+
+  mgrClientCounter = 0;
+  let html = '';
+
+  // Sort: online first, then by name
+  repeaters.sort((a, b) => {
+    if (a.online !== b.online) return a.online ? -1 : 1;
+    return (a.name || '').localeCompare(b.name || '');
+  });
+
+  for (const rep of repeaters) {
+    const isHl = highlightAp && myApUid === rep.uid;
+    html += '<div class="mgr-repeater' + (isHl ? ' highlight-ap' : '') + '" onclick="showDeviceDetail(\'' + esc(rep.uid) + '\')" style="cursor:pointer">';
+    html += '<div class="mgr-header">';
+    html += rep.online ? '<div class="dot on"></div>' : '<div class="dot off"></div>';
+    html += '<div style="flex:1">';
+    html += '<div class="mgr-name">' + esc(rep.name || '(unknown)');
+    if (rep.modelname) html += ' <span class="tag type">' + esc(rep.modelname) + '</span>';
+    html += rep.isMeshed ? ' <span class="tag mesh">meshed</span>' : ' <span class="tag not-meshed">not meshed</span>';
+    if (isHl) html += ' <span class="tag mesh">connected AP</span>';
+    html += '</div>';
+    html += '<div class="mgr-meta">' + esc(rep.ip || '-') + ' &middot; ' + esc(rep.mac || '') + '</div>';
+
+    // Uplink info
+    if (rep.uplinkName) {
+      // Get speed from raw data
+      const rawDev = rawList.find(d => d.UID === rep.uid);
+      let speedText = '';
+      if (rawDev?.link_list && Array.isArray(rawDev.link_list) && rawDev.link_list.length) {
+        const entries = rawDev.link_list[0]?.entry || [];
+        const uplinkEntry = entries.find(e => e.is_uplink === '1');
+        if (uplinkEntry) {
+          const media = uplinkEntry.media_type || '';
+          const speed = uplinkEntry.speed || '';
+          speedText = media + (speed && speed !== '0' ? ' ' + speed + ' Mbit/s' : '');
+        }
+      }
+      html += '<div class="mgr-uplink">↑ <span class="via">' + esc(rep.uplinkName) + '</span>';
+      if (speedText) html += ' <span style="color:var(--text-dim)">(' + esc(speedText) + ')</span>';
+      html += '</div>';
+    } else if (!rep.isMeshed) {
+      html += '<div class="mgr-uplink" style="color:var(--red)">not paired</div>';
+    }
+
+    // Connected clients
+    const rawDev = rawList.find(d => d.UID === rep.uid);
+    if (rawDev) {
+      const entries = (rawDev.link_list?.[0]?.entry || []);
+      const clients = [];
+      for (const e of entries) {
+        if (e.is_uplink === '0' && e.remote_dev_mesh_uid) {
+          const clientRaw = byMeshUid[e.remote_dev_mesh_uid];
+          if (clientRaw && clientRaw.UID !== rawDev.UID && !repeaterUids.has(clientRaw.UID)) {
+            clients.push({
+              name: clientRaw.friendly_name || clientRaw.name || '?',
+              ip: clientRaw.ip || '',
+              uid: clientRaw.UID || '',
+              online: clientRaw.active === '1',
+              media: e.media_type || '',
+              speed: e.speed || '0',
+              iface: e.local_interface_name || '',
+            });
+          }
+        }
+      }
+      if (clients.length) {
+        const cid = 'mgr-cl-' + (mgrClientCounter++);
+        html += '<div class="mgr-clients-toggle" onclick="event.stopPropagation(); toggleMgrClients(\'' + cid + '\', this)">▸ ' + clients.length + ' client' + (clients.length !== 1 ? 's' : '') + '</div>';
+        html += '<div class="mgr-client-list" id="' + cid + '">';
+        for (const c of clients.sort((a, b) => (a.online === b.online ? 0 : a.online ? -1 : 1) || a.name.localeCompare(b.name))) {
+          const dot = c.online ? '<span class="dot on" style="display:inline-block;width:5px;height:5px;"></span>' : '<span class="dot off" style="display:inline-block;width:5px;height:5px;"></span>';
+          const speed = c.speed && c.speed !== '0' ? ' ' + c.speed + 'Mbps' : '';
+          html += '<div class="mgr-client" onclick="event.stopPropagation(); showDeviceDetail(\'' + esc(c.uid) + '\')">' + dot + ' ' + esc(c.name);
+          if (c.ip) html += ' <span style="opacity:0.6">(' + esc(c.ip) + ')</span>';
+          html += ' <span style="font-size:9px;opacity:0.5">' + esc(c.iface) + esc(c.media) + speed + '</span>';
+          html += '</div>';
+        }
+        html += '</div>';
+      }
+    }
+
+    html += '</div></div>';
+    html += '</div>';
+  }
+
+  // Also show master info
+  const master = allDevices.find(d => d.raw && (d.raw.flags || '').includes('ownentry'));
+  if (master) {
+    const rawMaster = rawList.find(d => d.UID === master.uid);
+    if (rawMaster) {
+      const entries = rawMaster.link_list?.[0]?.entry || [];
+      const masterClients = [];
+      for (const e of entries) {
+        if (e.is_uplink === '0' && e.remote_dev_mesh_uid) {
+          const cl = byMeshUid[e.remote_dev_mesh_uid];
+          if (cl && cl.UID !== rawMaster.UID && !repeaterUids.has(cl.UID)) {
+            masterClients.push(cl);
+          }
+        }
+      }
+      const isMasterHl = highlightAp && myApUid === master.uid;
+      html += '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:11px;color:var(--text-dim)">';
+      html += 'Router (' + esc(master.name) + '): ' + masterClients.length + ' direct client' + (masterClients.length !== 1 ? 's' : '');
+      if (isMasterHl) html += ' <span class="tag mesh">connected AP</span>';
+      html += '</div>';
+    }
+  }
+
+  el.innerHTML = html;
+  noteEl.style.display = 'block';
+}
+
+function toggleMgrClients(id, toggleEl) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.classList.toggle('expanded');
+    toggleEl.textContent = toggleEl.textContent.replace(/^[▸▾]/, el.classList.contains('expanded') ? '▾' : '▸');
+  }
 }
 
 function toggleClients(id) {
