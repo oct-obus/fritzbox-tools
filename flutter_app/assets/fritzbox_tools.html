@@ -162,6 +162,39 @@
     margin-bottom: -1px;
   }
   .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  .device-item { cursor: pointer; }
+  .device-item:active { background: rgba(255,255,255,0.03); }
+  .detail-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.7); z-index: 100;
+    display: none; justify-content: center; align-items: flex-start;
+    padding: 40px 12px; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  }
+  .detail-overlay.visible { display: flex; }
+  .detail-panel {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px; max-width: 500px; width: 100%; position: relative;
+  }
+  .detail-close {
+    position: absolute; top: 10px; right: 12px;
+    background: none; border: none; color: var(--text-dim); font-size: 18px;
+    cursor: pointer; padding: 4px 8px;
+  }
+  .detail-close:hover { color: var(--text); }
+  .detail-title { font-size: 16px; font-weight: 600; margin-bottom: 12px; padding-right: 30px; word-break: break-word; }
+  .detail-section { margin-bottom: 10px; }
+  .detail-section-title {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--text-dim); margin-bottom: 4px; padding-bottom: 2px;
+    border-bottom: 1px solid var(--border);
+  }
+  .detail-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 5px 4px; font-size: 12px; cursor: pointer; border-radius: 4px;
+  }
+  .detail-row:active { background: rgba(63,185,80,0.15); }
+  .detail-label { color: var(--text-dim); flex-shrink: 0; margin-right: 12px; }
+  .detail-value { font-family: monospace; word-break: break-all; text-align: right; }
   @media (max-width: 600px) { .row { flex-direction: column; gap: 0; } }
 </style>
 </head>
@@ -257,6 +290,13 @@
     <button id="btn-mesh-stop" onclick="stopPoll()" style="display:none; margin-left: 6px;">Stop</button>
     <div class="status" id="mesh-status"></div>
     <div class="log" id="mesh-log"></div>
+  </div>
+
+  <div class="detail-overlay" id="detail-overlay" onclick="if(event.target===this)closeDetail()">
+    <div class="detail-panel">
+      <button class="detail-close" onclick="closeDetail()">✕</button>
+      <div id="detail-content"></div>
+    </div>
   </div>
 </div>
 
@@ -479,9 +519,9 @@ function parseDeviceList(data, meshNodes) {
     // Determine if this is a repeater
     const isRepeater = !!(
       modelname.toLowerCase().includes('repeater') ||
-      modelname.toLowerCase().includes('fritz!repeater') ||
       (meshNode && meshNode.meshRole === 'slave') ||
-      hasApInterfaces
+      hasApInterfaces ||
+      d.nexuspeer_UID
     );
 
     // Determine mesh status
@@ -512,6 +552,7 @@ function parseDeviceList(data, meshNodes) {
       modelname,
       uplinkName,
       uid: d.UID || '',
+      raw: d,
     };
   });
 }
@@ -610,7 +651,7 @@ function renderDevices(devices) {
     } else if (d.isRepeater && !d.isMeshed) {
       uplink = '<div class="uplink-info" style="color:var(--red);">not paired</div>';
     }
-    return '<div class="device-item">' + dot +
+    return '<div class="device-item" onclick="showDeviceDetail(\'' + esc(d.uid) + '\')">' + dot +
       '<div class="device-info"><div class="device-name">' + esc(d.name || '(unknown)') + '</div>' +
       '<div class="device-detail">' + detail + '</div>' + uplink + tagsHtml + '</div>' +
       '</div>';
@@ -728,13 +769,11 @@ function renderTree() {
   if (!master) master = list.find(d => d.mesh_UIDs === '1');
 
   // Build tree: master -> repeaters -> their clients
-  // A repeater is a device that has AP interfaces (serves clients) and has uplink
+  // Use the same isRepeater logic from allDevices for consistency
+  const repeaterUids = new Set(allDevices.filter(d => d.isRepeater).map(d => d.uid));
   const repeaters = list.filter(d => {
     if (d === master) return false;
-    const linkList = d.link_list;
-    if (!Array.isArray(linkList) || !linkList.length) return false;
-    const entries = linkList[0]?.entry || [];
-    return entries.some(e => e.is_uplink === '0' && (e.local_interface_name || '').startsWith('AP:'));
+    return repeaterUids.has(d.UID);
   });
 
   // Map children to their parent (parentuid)
@@ -780,6 +819,7 @@ function renderTree() {
           clients.push({
             name: clientDev.friendly_name || clientDev.name || '?',
             ip: clientDev.ip || '',
+            uid: clientDev.UID || '',
             isRepeater: isRep,
             online: clientDev.active === '1',
             mediaType: e.media_type || '',
@@ -810,6 +850,7 @@ function renderTree() {
         masterClients.push({
           name: d.friendly_name || d.name || '?',
           ip: d.ip || '',
+          uid: d.UID || '',
           online: d.active === '1',
           mediaType: entries.find(e => e.is_uplink === '1')?.media_type || '',
           speed: entries.find(e => e.is_uplink === '1')?.speed || '',
@@ -840,7 +881,7 @@ function renderTree() {
     html += '<div class="tree-clients" id="' + id + '">';
     for (const c of nonRepeaterClients) {
       const dot = c.online ? '<span class="dot on" style="display:inline-block;width:5px;height:5px;"></span>' : '<span class="dot off" style="display:inline-block;width:5px;height:5px;"></span>';
-      html += '<div class="tree-client-item">' + dot + ' ' + esc(c.name);
+      html += '<div class="tree-client-item" onclick="showDeviceDetail(\'' + esc(c.uid) + '\')" style="cursor:pointer">' + dot + ' ' + esc(c.name);
       if (c.ip) html += ' <span style="color:var(--text-dim)">(' + esc(c.ip) + ')</span>';
       html += ' <span style="font-size:9px;color:var(--text-dim)">' + esc(c.mediaType) + (c.speed && c.speed !== '0' ? ' ' + c.speed + ' Mbit/s' : '') + '</span>';
       html += '</div>';
@@ -860,7 +901,7 @@ function renderTree() {
     const childRepeaters = repeatersByUplink[d.UID] || [];
 
     let html = '<div class="tree-item">';
-    html += '<div class="tree-header">';
+    html += '<div class="tree-header" onclick="showDeviceDetail(\'' + esc(d.UID || '') + '\')" style="cursor:pointer">';
     html += online ? '<span class="tree-icon-dot online"></span>' : '<span class="tree-icon-dot offline"></span>';
     html += '<div style="flex:1">';
     html += '<div class="tree-name">' + (online ? '' : '<span style="opacity:0.5">') + esc(name) + (online ? '' : '</span>');
@@ -891,7 +932,7 @@ function renderTree() {
 
   // Master node
   html += '<div class="tree-item">';
-  html += '<div class="tree-header">';
+  html += '<div class="tree-header" onclick="showDeviceDetail(\'' + esc(master?.UID || '') + '\')" style="cursor:pointer">';
   html += '<span class="tree-icon-dot master"></span>';
   html += '<div style="flex:1">';
   html += '<div class="tree-name">' + esc(master ? (master.friendly_name || master.name || 'Fritz!Box') : 'Fritz!Box') + ' <span class="tag mesh">master</span></div>';
@@ -907,7 +948,7 @@ function renderTree() {
     html += '<div class="tree-clients" id="' + id + '">';
     for (const c of masterClients) {
       const dot = c.online ? '<span class="dot on" style="display:inline-block;width:5px;height:5px;"></span>' : '<span class="dot off" style="display:inline-block;width:5px;height:5px;"></span>';
-      html += '<div class="tree-client-item">' + dot + ' ' + esc(c.name);
+      html += '<div class="tree-client-item" onclick="showDeviceDetail(\'' + esc(c.uid) + '\')" style="cursor:pointer">' + dot + ' ' + esc(c.name);
       if (c.ip) html += ' <span style="color:var(--text-dim)">(' + esc(c.ip) + ')</span>';
       html += '</div>';
     }
@@ -942,7 +983,7 @@ function renderTree() {
     html += '<div style="margin-top:12px;padding-top:8px;border-top:1px solid var(--border);">';
     html += '<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;">Not meshed / offline (' + nonMeshedRepeaters.length + ')</div>';
     for (const d of nonMeshedRepeaters) {
-      html += '<div class="tree-client-item" style="padding:3px 0;"><span class="dot off" style="display:inline-block;width:5px;height:5px;"></span> ' + esc(d.name) + ' <span class="tag not-meshed">not meshed</span></div>';
+      html += '<div class="tree-client-item" onclick="showDeviceDetail(\'' + esc(d.uid) + '\')" style="padding:3px 0;cursor:pointer"><span class="dot off" style="display:inline-block;width:5px;height:5px;"></span> ' + esc(d.name) + ' <span class="tag not-meshed">not meshed</span></div>';
     }
     html += '</div>';
   }
@@ -981,6 +1022,137 @@ function applyScale(val) {
     if (val >= 0.8 && val <= 1.4) applyScale(val);
   }
 })();
+
+// --- Device detail view ---
+function showDeviceDetail(uid) {
+  if (!uid) return;
+  const parsed = allDevices.find(d => d.uid === uid);
+  let raw = parsed ? parsed.raw : null;
+  if (!raw && rawLandeviceData) {
+    let list = rawLandeviceData.landevice || rawLandeviceData.devices || rawLandeviceData;
+    if (list && typeof list === 'object' && !Array.isArray(list)) list = list.device || [];
+    if (Array.isArray(list) && list.length && list[0] && list[0].device) list = list[0].device;
+    if (Array.isArray(list)) raw = list.find(d => d.UID === uid);
+  }
+  if (!raw && !parsed) return;
+
+  const panel = document.getElementById('detail-content');
+  let html = '';
+  const name = raw?.friendly_name || raw?.name || parsed?.name || '(unknown)';
+  html += '<div class="detail-title">' + esc(name) + '</div>';
+
+  // Status section
+  const online = raw ? (raw.active === '1') : parsed?.online;
+  html += '<div class="detail-section">';
+  html += '<div class="detail-section-title">Status</div>';
+  html += detailRow('Status', online ? 'Online' : 'Offline');
+  if (raw?.online_since && raw.online_since !== '0') {
+    const d = new Date(parseInt(raw.online_since) * 1000);
+    html += detailRow('Online Since', d.toLocaleString());
+  }
+  if (parsed?.isRepeater) {
+    html += detailRow('Device Type', 'Repeater');
+    html += detailRow('Mesh Status', parsed.isMeshed ? 'Meshed' : 'Not meshed');
+    if (parsed.meshRole) html += detailRow('Mesh Role', parsed.meshRole);
+    if (parsed.uplinkName) html += detailRow('Uplink Via', parsed.uplinkName);
+  }
+  html += '</div>';
+
+  // Identity section
+  html += '<div class="detail-section">';
+  html += '<div class="detail-section-title">Identity</div>';
+  if (raw?.ip) html += detailRow('IP Address', raw.ip);
+  if (raw?.ipv6addrs) html += detailRow('IPv6', raw.ipv6addrs);
+  if (raw?.mac) html += detailRow('MAC Address', raw.mac);
+  if (raw?.hostname && raw.hostname !== raw.friendly_name) html += detailRow('Hostname', raw.hostname);
+  if (raw?.UID) html += detailRow('UID', raw.UID);
+  html += '</div>';
+
+  // Hardware section
+  const hasHw = raw?.modelname || raw?.manu_name || raw?.device_class;
+  if (hasHw) {
+    html += '<div class="detail-section">';
+    html += '<div class="detail-section-title">Hardware</div>';
+    if (raw.modelname) html += detailRow('Model', raw.modelname);
+    if (raw.manu_name) html += detailRow('Manufacturer', raw.manu_name === '1' ? 'AVM (Fritz!)' : (raw.manu_name === '0' ? 'Third-party' : raw.manu_name));
+    if (raw.device_class && raw.device_class !== 'Generic') html += detailRow('Device Class', raw.device_class);
+    html += '</div>';
+  }
+
+  // Network section
+  html += '<div class="detail-section">';
+  html += '<div class="detail-section-title">Network</div>';
+  if (raw?.flags) html += detailRow('Connection', raw.flags);
+  if (raw?.type) html += detailRow('Type', raw.type);
+  const linkList = raw?.link_list;
+  if (Array.isArray(linkList) && linkList.length) {
+    const entries = linkList[0]?.entry || [];
+    const uplinkEntry = entries.find(e => e.is_uplink === '1');
+    if (uplinkEntry) {
+      if (uplinkEntry.media_type) html += detailRow('Uplink Media', uplinkEntry.media_type);
+      if (uplinkEntry.speed && uplinkEntry.speed !== '0') html += detailRow('Uplink Speed', uplinkEntry.speed + ' Mbit/s');
+      if (uplinkEntry.local_interface_name) html += detailRow('Local Interface', uplinkEntry.local_interface_name);
+      if (uplinkEntry.remote_interface_name) html += detailRow('Remote Interface', uplinkEntry.remote_interface_name);
+    }
+    const apCount = entries.filter(e => e.is_uplink === '0' && (e.local_interface_name || '').startsWith('AP:')).length;
+    if (apCount) html += detailRow('AP Clients', String(apCount));
+    const lanCount = entries.filter(e => e.is_uplink === '0' && (e.local_interface_name || '').startsWith('LAN:')).length;
+    if (lanCount) html += detailRow('LAN Clients', String(lanCount));
+  }
+  html += '</div>';
+
+  // Mesh section
+  const hasMesh = raw?.mesh_UIDs || raw?.nexuspeer_UID || raw?.parentuid || raw?.wlan_UIDs;
+  if (hasMesh) {
+    html += '<div class="detail-section">';
+    html += '<div class="detail-section-title">Mesh</div>';
+    if (raw.mesh_UIDs) html += detailRow('Mesh UID', raw.mesh_UIDs);
+    if (raw.nexuspeer_UID) html += detailRow('Nexuspeer UID', raw.nexuspeer_UID);
+    if (raw.parentuid) {
+      const parent = allDevices.find(d => d.uid === raw.parentuid);
+      html += detailRow('Parent Device', parent ? parent.name : raw.parentuid);
+    }
+    if (raw.wlan_UIDs) {
+      const wlanIds = raw.wlan_UIDs.split(',').map(s => s.trim()).filter(Boolean);
+      html += detailRow('WLAN Interfaces', String(wlanIds.length));
+    }
+    html += '</div>';
+  }
+
+  panel.innerHTML = html;
+  document.getElementById('detail-overlay').classList.add('visible');
+}
+
+function closeDetail() {
+  document.getElementById('detail-overlay').classList.remove('visible');
+}
+
+function detailRow(label, value) {
+  const safeVal = esc(String(value));
+  return '<div class="detail-row" onclick="copyDetailValue(this)" title="Tap to copy">' +
+    '<span class="detail-label">' + esc(label) + '</span>' +
+    '<span class="detail-value">' + safeVal + '</span></div>';
+}
+
+function copyDetailValue(el) {
+  const val = el.querySelector('.detail-value').textContent;
+  try {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(val);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = val;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+  } catch (e) {}
+  el.style.background = 'rgba(63,185,80,0.15)';
+  setTimeout(() => el.style.background = '', 400);
+}
 </script>
 </body>
 </html>
