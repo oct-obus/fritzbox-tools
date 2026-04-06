@@ -59,3 +59,12 @@ jobs:
         with:
           files: flutter_app/FritzTools.ipa
           generate_release_notes: true
+
+      - name: Trigger app-source update
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          curl -sS -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.DISPATCH_PAT }}" \
+            https://api.github.com/repos/oct-obus/app-source/dispatches \
+            -d '{"event_type":"update-source"}'
