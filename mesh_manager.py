@@ -37,6 +37,21 @@ WLAN_SERVICE = "urn:dslforum-org:service:WLANConfiguration:1"
 WLAN_CONTROL_URL = "/upnp/control/wlanconfig1"
 
 
+def is_meshed(d):
+    """Determine if a device is actively meshed."""
+    mesh_uid = d.get("mesh_UIDs", "")
+    if not mesh_uid:
+        return False
+    if d.get("nexuspeer_UID"):
+        return True
+    link_list = d.get("link_list", [])
+    if isinstance(link_list, list) and link_list:
+        entries = link_list[0].get("entry", []) if isinstance(link_list[0], dict) else []
+        if any(e.get("is_uplink") == "1" for e in entries):
+            return True
+    return False
+
+
 def fetch_devices(host, sid):
     """Fetch the full landevice list."""
     data = api_get(host, sid, "landevice")
@@ -161,9 +176,8 @@ def cmd_list(args):
         model = d.get("modelname") or ""
         ip = d.get("ip") or "-"
         online = d.get("active") == "1"
-        meshed = bool(d.get("nexuspeer_UID"))
+        meshed = is_meshed(d)
         uplink = get_uplink_info(d, devices_by_mesh_uid)
-
         status = "ONLINE" if online else "offline"
         mesh_status = "meshed" if meshed else "not meshed"
 
@@ -239,7 +253,7 @@ def cmd_topology(args):
         name = r.get("friendly_name") or r.get("name") or "?"
         model = r.get("modelname") or ""
         online = r.get("active") == "1"
-        meshed = bool(r.get("nexuspeer_UID"))
+        meshed = is_meshed(r)
         uplink = get_uplink_info(r, devices_by_mesh_uid)
 
         status_char = "+" if online else "-"
@@ -470,9 +484,7 @@ def cmd_info(args):
 
     # Is repeater?
     rep = is_repeater(match, mesh_nodes)
-    meshed = bool(match.get("mesh_UIDs") and (match.get("nexuspeer_UID") or
-                  any(e.get("is_uplink") == "1" for e in
-                      (match.get("link_list", [{}])[0].get("entry", []) if match.get("link_list") else []))))
+    meshed = is_meshed(match)
     if rep:
         print(f"\n  ** This device is a REPEATER **")
         print(f"  Mesh status: {'meshed' if meshed else 'NOT meshed'}")

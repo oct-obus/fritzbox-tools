@@ -695,11 +695,6 @@ function findUplinkFromLinkList(d, meshUidToDevice) {
   return null;
 }
 
-function checkIsMeshed(d) {
-  const meshUid = d.mesh_UIDs || '';
-  return !!(meshUid && (d.nexuspeer_UID || hasUplink(d)));
-}
-
 function toggleRepeaterFilter() {
   showRepeatersOnly = !showRepeatersOnly;
   document.getElementById('btn-filter-repeaters').classList.toggle('active', showRepeatersOnly);
@@ -1021,7 +1016,7 @@ function renderTree() {
     const model = d.modelname || '';
     const online = d.active === '1';
     const parsedDev = allDevices.find(ad => ad.uid === d.UID);
-    const isMeshed = parsedDev ? parsedDev.isMeshed : checkIsMeshed(d);
+    const isMeshed = parsedDev ? parsedDev.isMeshed : false;
     const clients = getConnectedClients(d);
     const childRepeaters = repeatersByUplink[d.UID] || [];
 
@@ -1103,17 +1098,6 @@ function renderTree() {
     html += '<div class="tree-children">';
     for (const r of topLevelRepeaters) {
       html += renderRepeaterNode(r);
-    }
-    html += '</div>';
-  }
-
-  // Non-meshed repeaters (offline, never paired)
-  const nonMeshedRepeaters = allDevices.filter(d => d.isRepeater && !d.isMeshed && !d.online);
-  if (nonMeshedRepeaters.length) {
-    html += '<div style="margin-top:12px;padding-top:8px;border-top:1px solid var(--border);">';
-    html += '<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;">Not meshed / offline (' + nonMeshedRepeaters.length + ')</div>';
-    for (const d of nonMeshedRepeaters) {
-      html += '<div class="tree-client-item" onclick="showDeviceDetail(\'' + esc(d.uid) + '\')" style="padding:3px 0;cursor:pointer"><span class="dot off" style="display:inline-block;width:5px;height:5px;"></span> ' + esc(d.name) + ' <span class="tag not-meshed">not meshed</span></div>';
     }
     html += '</div>';
   }

@@ -356,19 +356,22 @@ class FritzProxy {
       if (resp.statusCode == 401 && password.isNotEmpty) {
         // Need HTTP Digest auth — use dart:io HttpClient for digest support
         final client = HttpClient();
-        client.addCredentials(
-          Uri.parse('http://$repeaterIp:49000$controlUrl'),
-          'HTTPS Access',
-          HttpClientDigestCredentials('', password),
-        );
-        final req = await client.postUrl(Uri.parse('http://$repeaterIp:49000$controlUrl'));
-        req.headers.contentType = ContentType('text', 'xml', charset: 'utf-8');
-        req.headers.set('SOAPAction', '"$service#X_AVM-DE_SetWPSConfig"');
-        req.write(soapBody);
-        final digestResp = await req.close();
-        await digestResp.transform(utf8.decoder).join();
-        client.close();
-        return 'WPS triggered on $repeaterIp (digest auth).';
+        try {
+          client.addCredentials(
+            Uri.parse('http://$repeaterIp:49000$controlUrl'),
+            'HTTPS Access',
+            HttpClientDigestCredentials('', password),
+          );
+          final req = await client.postUrl(Uri.parse('http://$repeaterIp:49000$controlUrl'));
+          req.headers.contentType = ContentType('text', 'xml', charset: 'utf-8');
+          req.headers.set('SOAPAction', '"$service#X_AVM-DE_SetWPSConfig"');
+          req.write(soapBody);
+          final digestResp = await req.close();
+          await digestResp.transform(utf8.decoder).join();
+          return 'WPS triggered on $repeaterIp (digest auth).';
+        } finally {
+          client.close();
+        }
       }
 
       return 'WPS triggered on $repeaterIp.';
