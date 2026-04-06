@@ -106,6 +106,26 @@ class FritzProxy {
       }
     });
 
+    // data.lua proxy (for mesh topology, etc.)
+    router.get('/proxy/<host>/data/<page>', (shelf.Request request, String host, String page) async {
+      host = Uri.decodeComponent(host);
+      final sid = request.url.queryParameters['sid'] ?? '';
+      try {
+        final resp = await http.post(
+          Uri.parse('http://$host/data.lua'),
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/json',
+          },
+          body: 'sid=${Uri.encodeComponent(sid)}&page=${Uri.encodeComponent(page)}',
+        );
+        return shelf.Response.ok(resp.body,
+            headers: {'Content-Type': 'application/json'});
+      } catch (e) {
+        return _jsonResponse({'error': 'data.lua call failed: $e'});
+      }
+    });
+
     // Mesh start
     router.post('/proxy/<host>/mesh/start', (shelf.Request request, String host) async {
       host = Uri.decodeComponent(host);

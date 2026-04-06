@@ -96,6 +96,20 @@
   }
   .tag.mesh { background: rgba(88,166,255,0.15); color: var(--accent); }
   .tag.type { background: rgba(139,148,158,0.1); color: var(--text-dim); }
+  .tag.repeater { background: rgba(210,153,34,0.15); color: var(--orange); }
+  .tag.not-meshed { background: rgba(248,81,73,0.15); color: var(--red); }
+  .uplink-info { font-size: 10px; color: var(--text-dim); margin-top: 1px; }
+  .uplink-info .via { color: var(--accent); }
+  .filter-btn {
+    padding: 3px 10px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .filter-btn.active { background: rgba(210,153,34,0.15); color: var(--orange); border-color: var(--orange); }
   .empty { text-align: center; padding: 20px; color: var(--text-dim); font-size: 12px; }
   .flex-between { display: flex; justify-content: space-between; align-items: center; }
   .count { font-size: 11px; color: var(--text-dim); }
@@ -163,7 +177,10 @@
   <div class="card" id="devices-card" style="display:none;">
     <div class="flex-between">
       <h2>LAN Devices <span class="count" id="device-count"></span></h2>
-      <button onclick="loadDevices()">Refresh</button>
+      <div style="display:flex; gap:6px; align-items:center;">
+        <button class="filter-btn" id="btn-filter-repeaters" onclick="toggleRepeaterFilter()">📡 Repeaters</button>
+        <button onclick="loadDevices()">Refresh</button>
+      </div>
     </div>
     <div class="device-list" id="devices-content">
       <div class="empty">Loading...</div>
@@ -193,8 +210,6 @@
 </div>
 
 <script>
-// All API calls go through the local Dart proxy at the origin
-// The proxy forwards: /proxy/<host>/path -> http://<host>/path
 const PROXY_BASE = window.location.origin;
 
 let currentSid = null;
@@ -202,6 +217,9 @@ let currentHost = null;
 let polling = false;
 let pollTimer = null;
 let initialPeers = new Set();
+let meshData = null;
+let allDevices = [];
+let showRepeatersOnly = false;
 
 function loadSaved() {
   try {
@@ -285,6 +303,8 @@ async function doLogin() {
 function doLogout() {
   currentSid = null;
   currentHost = null;
+  meshData = null;
+  allDevices = [];
   stopPoll();
   setStatus('login-status', 'Disconnected.', '');
   document.getElementById('btn-logout').style.display = 'none';
@@ -295,53 +315,226 @@ function doLogout() {
   document.getElementById('device-count').textContent = '';
 }
 
+// --- Mesh topology ---
+async function loadMeshTopology() {
+  if (!currentSid || !currentHost) return null;
+  try {
+    const url = proxyUrl(currentHost, '/data/mesh?sid=' + currentSid);
+    const resp = await fritzFetch(url);
+    return await resp.json();
+  } catch (e) {
+    console.log('Mesh topology load failed:', e);
+    return null;
+  }
+}
+
+function parseMeshNodes(mesh) {
+  if (!mesh || !mesh.data || !mesh.data.nodes) return {};
+  const nodes = {};
+  for (const node of mesh.data.nodes) {
+    nodes[node.uid] = {
+      uid: node.uid,
+      name: node.name || '',
+      meshRole: node.mesh_type || '',  // master, slave, ...
+      isMaster: node.mesh_type === 'master',
+      model: node.model || '',
+      isMeshed: node.is_meshed === true || node.is_meshed === '1',
+      interfaces: node.node_interfaces || [],
+    };
+  }
+  return nodes;
+}
+
+function findUplinkFromMesh(meshNodes, deviceMeshUid) {
+  const node = meshNodes[deviceMeshUid];
+  if (!node || !node.interfaces) return null;
+  for (const iface of node.interfaces) {
+    if (iface.type === 'WLAN' || iface.type === 'LAN') {
+      const links = iface.node_links || [];
+      for (const link of links) {
+        if (link.type === 'UPLINK' || link.node_interface_type === 'UPLINK') {
+          const targetUid = link.node_uid;
+          const target = meshNodes[targetUid];
+          if (target) return target.name || ('UID ' + targetUid);
+        }
+      }
+    }
+  }
+  return null;
+}
+
+// --- Device list ---
 async function loadDevices() {
   if (!currentSid || !currentHost) return;
   const el = document.getElementById('devices-content');
   el.innerHTML = '<div class="empty">Loading...</div>';
 
   try {
-    const url = proxyUrl(currentHost, '/api/landevice?sid=' + currentSid);
-    const resp = await fritzFetch(url);
-    const data = await resp.json();
-    renderDevices(data);
+    const [devResp, mesh] = await Promise.all([
+      fritzFetch(proxyUrl(currentHost, '/api/landevice?sid=' + currentSid)),
+      loadMeshTopology(),
+    ]);
+    const data = await devResp.json();
+    meshData = mesh;
+    const meshNodes = parseMeshNodes(mesh);
+    allDevices = parseDeviceList(data, meshNodes);
+    renderFilteredDevices();
   } catch (e) {
     el.innerHTML = '<div class="empty">Failed: ' + esc(e.message) + '</div>';
   }
 }
 
-function parseDeviceList(data) {
+function parseDeviceList(data, meshNodes) {
   let list = data.landevice || data.devices || data;
   if (list && typeof list === 'object' && !Array.isArray(list)) list = list.device || [];
   if (Array.isArray(list) && list.length && list[0] && list[0].device) list = list[0].device;
   if (!Array.isArray(list)) return [];
-  return list.filter(d => typeof d === 'object').map(d => ({
-    name: d.name || d.hostname || '',
-    ip: d.ip || d.ipv4 || '',
-    mac: d.mac || '',
-    online: d.active === '1' || d.active === true || d.online === '1',
-    type: d.type || d.devtype || '',
-    mesh: d.mesh_state === '1' || d.is_mesh === '1',
-  }));
+
+  // Build a map of mesh_uid -> device for cross-referencing
+  const meshUidToDevice = {};
+  for (const d of list) {
+    if (d.mesh_UIDs) meshUidToDevice[d.mesh_UIDs] = d;
+  }
+
+  return list.filter(d => typeof d === 'object').map(d => {
+    const meshUid = d.mesh_UIDs || '';
+    const meshNode = meshUid ? meshNodes[meshUid] : null;
+    const modelname = d.modelname || '';
+    const hasApInterfaces = hasAccessPointLinks(d);
+    const hasUplinkLinks = hasUplink(d);
+
+    // Determine if this is a repeater
+    const isRepeater = !!(
+      modelname.toLowerCase().includes('repeater') ||
+      modelname.toLowerCase().includes('fritz!repeater') ||
+      (meshNode && meshNode.meshRole === 'slave') ||
+      hasApInterfaces
+    );
+
+    // Determine mesh status
+    const isMeshed = !!(meshUid && (
+      (meshNode && meshNode.isMeshed) ||
+      d.nexuspeer_UID ||
+      hasUplinkLinks
+    ));
+
+    // Find uplink device name
+    let uplinkName = null;
+    if (isRepeater) {
+      // First try mesh topology data
+      if (meshNode) uplinkName = findUplinkFromMesh(meshNodes, meshUid);
+      // Fallback: parse link_list for uplink entries
+      if (!uplinkName) uplinkName = findUplinkFromLinkList(d, meshUidToDevice);
+    }
+
+    return {
+      name: d.friendly_name || d.name || d.hostname || '',
+      ip: d.ip || d.ipv4 || '',
+      mac: d.mac || '',
+      online: d.active === '1' || d.active === true || d.online === '1',
+      type: d.type || d.devtype || '',
+      isRepeater,
+      isMeshed,
+      meshRole: meshNode ? meshNode.meshRole : '',
+      modelname,
+      uplinkName,
+      uid: d.UID || '',
+    };
+  });
 }
 
-function renderDevices(data) {
+function hasAccessPointLinks(d) {
+  const linkList = d.link_list;
+  if (!Array.isArray(linkList) || !linkList.length) return false;
+  const entries = linkList[0]?.entry || [];
+  return entries.some(e =>
+    e.is_uplink === '0' &&
+    (e.local_interface_name || '').startsWith('AP:')
+  );
+}
+
+function hasUplink(d) {
+  const linkList = d.link_list;
+  if (!Array.isArray(linkList) || !linkList.length) return false;
+  const entries = linkList[0]?.entry || [];
+  return entries.some(e => e.is_uplink === '1');
+}
+
+function findUplinkFromLinkList(d, meshUidToDevice) {
+  const linkList = d.link_list;
+  if (!Array.isArray(linkList) || !linkList.length) return null;
+  const entries = linkList[0]?.entry || [];
+  for (const entry of entries) {
+    if (entry.is_uplink === '1' && entry.remote_dev_mesh_uid) {
+      const remoteDev = meshUidToDevice[entry.remote_dev_mesh_uid];
+      if (remoteDev) {
+        return remoteDev.friendly_name || remoteDev.name || ('IP ' + remoteDev.ip);
+      }
+      // mesh_uid "1" typically means the main Fritz!Box
+      if (entry.remote_dev_mesh_uid === '1') return 'Fritz!Box (master)';
+      return 'Mesh node ' + entry.remote_dev_mesh_uid;
+    }
+  }
+  return null;
+}
+
+function toggleRepeaterFilter() {
+  showRepeatersOnly = !showRepeatersOnly;
+  document.getElementById('btn-filter-repeaters').classList.toggle('active', showRepeatersOnly);
+  renderFilteredDevices();
+}
+
+function renderFilteredDevices() {
+  let devices = allDevices;
+  if (showRepeatersOnly) {
+    devices = devices.filter(d => d.isRepeater);
+  }
+  renderDevices(devices);
+}
+
+function renderDevices(devices) {
   const el = document.getElementById('devices-content');
-  const devices = parseDeviceList(data);
-  document.getElementById('device-count').textContent = '(' + devices.length + ')';
-  if (!devices.length) { el.innerHTML = '<div class="empty">No devices found.</div>'; return; }
+  const repeaterCount = allDevices.filter(d => d.isRepeater).length;
+  const countText = showRepeatersOnly
+    ? '(' + devices.length + ' repeater' + (devices.length !== 1 ? 's' : '') + ')'
+    : '(' + allDevices.length + (repeaterCount ? ', ' + repeaterCount + ' repeater' + (repeaterCount !== 1 ? 's' : '') : '') + ')';
+  document.getElementById('device-count').textContent = countText;
+
+  if (!devices.length) {
+    el.innerHTML = '<div class="empty">' + (showRepeatersOnly ? 'No repeaters found.' : 'No devices found.') + '</div>';
+    return;
+  }
+
   devices.sort((a, b) => {
+    // Repeaters first when filtering is off, then online first, then alpha
+    if (!showRepeatersOnly) {
+      if (a.isRepeater !== b.isRepeater) return a.isRepeater ? -1 : 1;
+    }
     if (a.online !== b.online) return a.online ? -1 : 1;
     return (a.name || '').localeCompare(b.name || '');
   });
+
   el.innerHTML = devices.map(d => {
     const dot = d.online ? '<div class="dot on"></div>' : '<div class="dot off"></div>';
-    const mesh = d.mesh ? ' <span class="tag mesh">mesh</span>' : '';
-    const type = d.type ? '<span class="tag type">' + esc(d.type) + '</span>' : '';
+    let tags = '';
+    if (d.isRepeater) {
+      tags += d.isMeshed
+        ? ' <span class="tag mesh">meshed</span>'
+        : ' <span class="tag not-meshed">not meshed</span>';
+      if (d.modelname) tags += ' <span class="tag type">' + esc(d.modelname) + '</span>';
+      else tags += ' <span class="tag repeater">repeater</span>';
+    }
+    const detail = esc(d.ip || '-') + ' &middot; ' + esc(d.mac || '-');
+    let uplink = '';
+    if (d.isRepeater && d.uplinkName) {
+      uplink = '<div class="uplink-info">↑ via <span class="via">' + esc(d.uplinkName) + '</span></div>';
+    } else if (d.isRepeater && !d.isMeshed) {
+      uplink = '<div class="uplink-info" style="color:var(--red);">⚠ not paired</div>';
+    }
     return '<div class="device-item">' + dot +
       '<div class="device-info"><div class="device-name">' + esc(d.name || '(unknown)') + '</div>' +
-      '<div class="device-detail">' + esc(d.ip || '-') + ' &middot; ' + esc(d.mac || '-') + '</div></div>' +
-      type + mesh + '</div>';
+      '<div class="device-detail">' + detail + '</div>' + uplink + '</div>' +
+      tags + '</div>';
   }).join('');
 }
 
