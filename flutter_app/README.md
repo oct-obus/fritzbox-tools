@@ -1,16 +1,43 @@
-# fritz_tools
+# Fritz!Box Tools — Flutter iOS App
 
-A new Flutter project.
+Fritz!Box router management app for iOS. Uses a local Dart HTTP proxy server with a WebView UI.
 
-## Getting Started
+## Architecture
 
-This project is a starting point for a Flutter application.
+```
+main.dart          → Starts FritzProxy, loads WebView pointing to http://127.0.0.1:8742
+fritz_proxy.dart   → Shelf HTTP server: serves UI, proxies Fritz!Box APIs, provides native endpoints
+fritzbox_tools.html → Self-contained SPA (inline CSS + HTML + JS, ~1660 lines)
+```
 
-A few resources to get you started if this is your first Flutter project:
+### Why this pattern?
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+- **No CORS issues**: the Dart proxy handles all Fritz!Box communication
+- **Native access**: proxy exposes `/local-ip` (network interfaces) and `/wifi-bssid` (WiFi BSSID via network_info_plus)
+- **PBKDF2 auth**: handled in Dart (cleaner than browser-side WebCrypto)
+- **Fixed port 8742**: ensures localStorage persists across app restarts
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+### Key dependencies
+
+- `webview_flutter` — WebView widget
+- `shelf` + `shelf_router` — HTTP server
+- `network_info_plus` — WiFi BSSID access (requires iOS location permission)
+- `crypto` — HMAC-SHA256 for PBKDF2 auth
+
+## iOS Permissions
+
+| Permission | File | Purpose |
+|---|---|---|
+| Local network access | Info.plist `NSLocalNetworkUsageDescription` | Fritz!Box communication |
+| Location (when in use) | Info.plist `NSLocationWhenInUseUsageDescription` | WiFi BSSID for AP detection |
+| WiFi info | Runner.entitlements `com.apple.developer.networking.wifi-info` | Access BSSID/SSID |
+| Arbitrary loads | Info.plist `NSAppTransportSecurity` | HTTP connections to Fritz!Box |
+
+## Build
+
+```bash
+flutter pub get
+flutter build ios --release --no-codesign
+```
+
+The unsigned IPA is created by CI from the `.app` bundle. See `.github/workflows/build-ios.yml`.
