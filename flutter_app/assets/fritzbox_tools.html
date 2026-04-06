@@ -116,6 +116,8 @@
     cursor: pointer;
   }
   .filter-btn.active { background: rgba(210,153,34,0.15); color: var(--orange); border-color: var(--orange); }
+  .filter-btn:disabled { opacity: 0.4; cursor: default; }
+  .filter-btn .ap-name { font-size: 10px; opacity: 0.7; margin-left: 3px; }
   .empty { text-align: center; padding: 20px; color: var(--text-dim); font-size: 12px; }
   .flex-between { display: flex; justify-content: space-between; align-items: center; }
   .count { font-size: 11px; color: var(--text-dim); }
@@ -289,7 +291,7 @@
     <div class="flex-between">
       <h2>LAN Devices <span class="count" id="device-count"></span></h2>
       <div style="display:flex; gap:6px; align-items:center;">
-        <button class="filter-btn" id="btn-highlight-ap" onclick="toggleHighlightAp()" style="display:none">My AP</button>
+        <button class="filter-btn" id="btn-highlight-ap" onclick="toggleHighlightAp()" disabled>My AP</button>
         <button class="filter-btn" id="btn-filter-repeaters" onclick="toggleRepeaterFilter()">Repeaters</button>
         <button onclick="loadDevices()">Refresh</button>
       </div>
@@ -369,6 +371,8 @@ let meshLoadError = null;
 let localIps = [];
 let myDeviceUid = null;
 let myApUid = null;
+let myApName = null;
+let myApStatus = 'pending'; // 'pending' | 'detected' | error string
 let highlightAp = false;
 
 function loadSaved() {
@@ -501,7 +505,9 @@ async function fetchLocalIps() {
 function detectMyDevice() {
   myDeviceUid = null;
   myApUid = null;
-  if (!localIps.length || !allDevices.length) return;
+  myApName = null;
+  if (!localIps.length) { myApStatus = 'No local IPs found'; return; }
+  if (!allDevices.length) { myApStatus = 'No devices loaded'; return; }
   // Find the device whose IP matches one of our local IPs
   for (const d of allDevices) {
     if (d.ip && localIps.includes(d.ip)) {
@@ -512,21 +518,23 @@ function detectMyDevice() {
         const entries = raw.link_list[0]?.entry || [];
         for (const e of entries) {
           if (e.is_uplink === '1' && e.remote_dev_mesh_uid) {
-            // Find the device with this mesh_uid
             const ap = allDevices.find(ad => ad.raw?.mesh_UIDs === e.remote_dev_mesh_uid);
             if (ap) {
               myApUid = ap.uid;
+              myApName = ap.name || ap.ip || 'Unknown AP';
             } else if (e.remote_dev_mesh_uid === '1') {
-              // Connected to master — find master device
               const master = allDevices.find(ad => ad.raw?.mesh_UIDs === '1' || (ad.raw?.flags || '').includes('ownentry'));
-              if (master) myApUid = master.uid;
+              if (master) { myApUid = master.uid; myApName = master.name || 'Fritz!Box'; }
             }
           }
         }
       }
-      break;
+      if (!myApUid) { myApStatus = 'No uplink found for ' + d.ip; }
+      else { myApStatus = 'detected'; }
+      return;
     }
   }
+  myApStatus = 'IP ' + localIps.join(', ') + ' not in device list';
 }
 
 function parseMeshNodes(mesh) {
@@ -702,11 +710,32 @@ function toggleRepeaterFilter() {
 }
 
 function toggleHighlightAp() {
+  if (!myApUid) return;
   highlightAp = !highlightAp;
-  document.getElementById('btn-highlight-ap').classList.toggle('active', highlightAp);
+  updateApButton();
   renderFilteredDevices();
   if (document.getElementById('tree-card').style.display !== 'none') renderTree();
   if (document.getElementById('manager-card').style.display !== 'none') renderMeshManager();
+}
+
+function updateApButton() {
+  const btn = document.getElementById('btn-highlight-ap');
+  if (myApStatus === 'detected' && myApName) {
+    btn.disabled = false;
+    btn.classList.toggle('active', highlightAp);
+    btn.innerHTML = highlightAp ? 'My AP <span class="ap-name">(' + esc(myApName) + ')</span>' : 'My AP';
+    btn.title = 'Connected to: ' + myApName;
+  } else if (myApStatus === 'pending') {
+    btn.disabled = true;
+    btn.classList.remove('active');
+    btn.innerHTML = 'My AP';
+    btn.title = 'Detecting...';
+  } else {
+    btn.disabled = true;
+    btn.classList.remove('active');
+    btn.innerHTML = 'My AP';
+    btn.title = myApStatus;
+  }
 }
 
 function renderFilteredDevices() {
@@ -725,9 +754,8 @@ function renderDevices(devices) {
     : '(' + allDevices.length + (repeaterCount ? ', ' + repeaterCount + ' repeater' + (repeaterCount !== 1 ? 's' : '') : '') + ')';
   document.getElementById('device-count').textContent = countText;
 
-  // Show "My AP" button if we detected which AP we're connected to
-  const highlightBtn = document.getElementById('btn-highlight-ap');
-  highlightBtn.style.display = myApUid ? '' : 'none';
+  // Update "My AP" button state
+  updateApButton();
 
   if (!devices.length) {
     el.innerHTML = '<div class="empty">' + (showRepeatersOnly ? 'No repeaters found.' : 'No devices found.') + '</div>';
