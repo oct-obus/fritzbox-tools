@@ -128,6 +128,24 @@
     display: none;
     -webkit-overflow-scrolling: touch;
   }
+  .tree-node { margin-left: 0; }
+  .tree-children { margin-left: 20px; border-left: 1px solid var(--border); padding-left: 12px; }
+  .tree-item {
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(48,54,61,0.4);
+  }
+  .tree-item:last-child { border-bottom: none; }
+  .tree-header { display: flex; align-items: center; gap: 8px; }
+  .tree-name { font-size: 13px; font-weight: 500; }
+  .tree-detail { font-size: 11px; color: var(--text-dim); font-family: monospace; margin-top: 1px; }
+  .tree-link-type { font-size: 10px; color: var(--text-dim); }
+  .tree-link-type .speed { color: var(--green); }
+  .tree-icon { font-size: 14px; flex-shrink: 0; }
+  .tree-clients-summary { font-size: 10px; color: var(--text-dim); margin-top: 2px; cursor: pointer; }
+  .tree-clients-summary:hover { color: var(--accent); }
+  .tree-clients { display: none; margin-left: 8px; margin-top: 4px; }
+  .tree-clients.expanded { display: block; }
+  .tree-client-item { font-size: 11px; color: var(--text-dim); padding: 1px 0; display: flex; align-items: center; gap: 6px; }
   .tabs { display: flex; gap: 0; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
   .tab {
     padding: 6px 14px;
@@ -171,6 +189,7 @@
 
   <div class="tabs" id="tabs" style="display:none;">
     <div class="tab active" data-tab="devices" onclick="switchTab('devices')">Devices</div>
+    <div class="tab" data-tab="tree" onclick="switchTab('tree')">Tree</div>
     <div class="tab" data-tab="mesh" onclick="switchTab('mesh')">Mesh</div>
   </div>
 
@@ -183,6 +202,16 @@
       </div>
     </div>
     <div class="device-list" id="devices-content">
+      <div class="empty">Loading...</div>
+    </div>
+  </div>
+
+  <div class="card" id="tree-card" style="display:none;">
+    <div class="flex-between">
+      <h2>Mesh Topology</h2>
+      <button onclick="loadDevices()">Refresh</button>
+    </div>
+    <div id="tree-content">
       <div class="empty">Loading...</div>
     </div>
   </div>
@@ -305,11 +334,13 @@ function doLogout() {
   currentHost = null;
   meshData = null;
   allDevices = [];
+  rawLandeviceData = null;
   stopPoll();
   setStatus('login-status', 'Disconnected.', '');
   document.getElementById('btn-logout').style.display = 'none';
   document.getElementById('tabs').style.display = 'none';
   document.getElementById('devices-card').style.display = 'none';
+  document.getElementById('tree-card').style.display = 'none';
   document.getElementById('mesh-card').style.display = 'none';
   document.getElementById('devices-content').innerHTML = '<div class="empty">Loading...</div>';
   document.getElementById('device-count').textContent = '';
@@ -375,10 +406,13 @@ async function loadDevices() {
       loadMeshTopology(),
     ]);
     const data = await devResp.json();
+    rawLandeviceData = data;
     meshData = mesh;
     const meshNodes = parseMeshNodes(mesh);
     allDevices = parseDeviceList(data, meshNodes);
     renderFilteredDevices();
+    // Also re-render tree if visible
+    if (document.getElementById('tree-card').style.display !== 'none') renderTree();
   } catch (e) {
     el.innerHTML = '<div class="empty">Failed: ' + esc(e.message) + '</div>';
   }
@@ -600,7 +634,9 @@ function stopPoll() {
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.getElementById('devices-card').style.display = name === 'devices' ? 'block' : 'none';
+  document.getElementById('tree-card').style.display = name === 'tree' ? 'block' : 'none';
   document.getElementById('mesh-card').style.display = name === 'mesh' ? 'block' : 'none';
+  if (name === 'tree') renderTree();
 }
 
 function setStatus(id, msg, cls) {
@@ -618,6 +654,264 @@ function appendLog(msg) {
 
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function time() { return new Date().toLocaleTimeString(); }
+
+// --- Tree view ---
+let rawLandeviceData = null;
+
+function renderTree() {
+  const el = document.getElementById('tree-content');
+  if (!rawLandeviceData || !allDevices.length) {
+    el.innerHTML = '<div class="empty">No data loaded. Go to Devices tab first.</div>';
+    return;
+  }
+
+  let list = rawLandeviceData.landevice || rawLandeviceData.devices || rawLandeviceData;
+  if (list && typeof list === 'object' && !Array.isArray(list)) list = list.device || [];
+  if (Array.isArray(list) && list.length && list[0] && list[0].device) list = list[0].device;
+  if (!Array.isArray(list)) { el.innerHTML = '<div class="empty">Could not parse device data.</div>'; return; }
+
+  // Build device lookup by UID and mesh_UID
+  const byUid = {};
+  const byMeshUid = {};
+  for (const d of list) {
+    if (d.UID) byUid[d.UID] = d;
+    if (d.mesh_UIDs) byMeshUid[d.mesh_UIDs] = d;
+  }
+
+  // Find the master device (Fritz!Box itself) — the "ownentry" flagged device
+  let master = list.find(d => (d.flags || '').includes('ownentry'));
+  if (!master) master = list.find(d => d.mesh_UIDs === '1');
+
+  // Build tree: master -> repeaters -> their clients
+  // A repeater is a device that has AP interfaces (serves clients) and has uplink
+  const repeaters = list.filter(d => {
+    if (d === master) return false;
+    const linkList = d.link_list;
+    if (!Array.isArray(linkList) || !linkList.length) return false;
+    const entries = linkList[0]?.entry || [];
+    return entries.some(e => e.is_uplink === '0' && (e.local_interface_name || '').startsWith('AP:'));
+  });
+
+  // Map children to their parent (parentuid)
+  const childrenOf = {};
+  for (const d of list) {
+    if (d.parentuid) {
+      if (!childrenOf[d.parentuid]) childrenOf[d.parentuid] = [];
+      childrenOf[d.parentuid].push(d);
+    }
+  }
+
+  // For each device, find which mesh node it connects to via uplink
+  function getUplinkInfo(d) {
+    const linkList = d.link_list;
+    if (!Array.isArray(linkList) || !linkList.length) return null;
+    const entries = linkList[0]?.entry || [];
+    for (const e of entries) {
+      if (e.is_uplink === '1') {
+        const remoteDev = byMeshUid[e.remote_dev_mesh_uid];
+        return {
+          name: remoteDev ? (remoteDev.friendly_name || remoteDev.name) : (e.remote_dev_mesh_uid === '1' ? 'Fritz!Box' : 'Node ' + e.remote_dev_mesh_uid),
+          mediaType: e.media_type || '',
+          speed: e.speed || '',
+          interface: e.remote_interface_name || '',
+        };
+      }
+    }
+    return null;
+  }
+
+  // Get connected clients for a node (from its link_list, non-uplink entries)
+  function getConnectedClients(d) {
+    const linkList = d.link_list;
+    if (!Array.isArray(linkList) || !linkList.length) return [];
+    const entries = linkList[0]?.entry || [];
+    const clients = [];
+    for (const e of entries) {
+      if (e.is_uplink === '0' && e.remote_dev_mesh_uid) {
+        const clientDev = byMeshUid[e.remote_dev_mesh_uid];
+        if (clientDev && clientDev !== d) {
+          // Skip if this client is itself a repeater (handled as child node)
+          const isRep = repeaters.includes(clientDev);
+          clients.push({
+            name: clientDev.friendly_name || clientDev.name || '?',
+            ip: clientDev.ip || '',
+            isRepeater: isRep,
+            online: clientDev.active === '1',
+            mediaType: e.media_type || '',
+            speed: e.speed || '',
+            interface: e.local_interface_name || '',
+          });
+        }
+      }
+    }
+    return clients;
+  }
+
+  // Also get clients connected directly to the master Fritz!Box
+  function getMasterClients() {
+    // Devices whose parentuid is empty and have uplink to mesh_uid "1" (master)
+    // OR devices that have link_list with uplink to master
+    const masterClients = [];
+    for (const d of list) {
+      if (d === master) continue;
+      if (repeaters.includes(d)) continue;
+      const linkList = d.link_list;
+      if (!Array.isArray(linkList) || !linkList.length) continue;
+      const entries = linkList[0]?.entry || [];
+      const hasMasterUplink = entries.some(e =>
+        e.is_uplink === '1' && (e.remote_dev_mesh_uid === '1' || e.remote_dev_mesh_uid === master?.mesh_UIDs)
+      );
+      if (hasMasterUplink) {
+        masterClients.push({
+          name: d.friendly_name || d.name || '?',
+          ip: d.ip || '',
+          online: d.active === '1',
+          mediaType: entries.find(e => e.is_uplink === '1')?.media_type || '',
+          speed: entries.find(e => e.is_uplink === '1')?.speed || '',
+        });
+      }
+    }
+    return masterClients;
+  }
+
+  // Build tree structure: master at top, repeaters grouped by uplink
+  const repeatersByUplink = {};
+  for (const r of repeaters) {
+    const uplink = getUplinkInfo(r);
+    const parentKey = uplink ? (byMeshUid[r.link_list?.[0]?.entry?.find(e => e.is_uplink === '1')?.remote_dev_mesh_uid]?.UID || 'master') : 'master';
+    if (!repeatersByUplink[parentKey]) repeatersByUplink[parentKey] = [];
+    repeatersByUplink[parentKey].push(r);
+  }
+
+  let clientIdCounter = 0;
+
+  function renderNodeClients(clients) {
+    if (!clients.length) return '';
+    const nonRepeaterClients = clients.filter(c => !c.isRepeater);
+    if (!nonRepeaterClients.length) return '';
+    const id = 'clients-' + (clientIdCounter++);
+    let html = '<div class="tree-clients-summary" onclick="toggleClients(\'' + id + '\')">';
+    html += '▸ ' + nonRepeaterClients.length + ' client' + (nonRepeaterClients.length !== 1 ? 's' : '') + ' connected</div>';
+    html += '<div class="tree-clients" id="' + id + '">';
+    for (const c of nonRepeaterClients) {
+      const dot = c.online ? '<span class="dot on" style="display:inline-block;width:5px;height:5px;"></span>' : '<span class="dot off" style="display:inline-block;width:5px;height:5px;"></span>';
+      html += '<div class="tree-client-item">' + dot + ' ' + esc(c.name);
+      if (c.ip) html += ' <span style="color:var(--text-dim)">(' + esc(c.ip) + ')</span>';
+      html += ' <span style="font-size:9px;color:var(--text-dim)">' + esc(c.mediaType) + (c.speed && c.speed !== '0' ? ' ' + c.speed + ' Mbit/s' : '') + '</span>';
+      html += '</div>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function renderRepeaterNode(d) {
+    const uplink = getUplinkInfo(d);
+    const name = d.friendly_name || d.name || '?';
+    const model = d.modelname || '';
+    const online = d.active === '1';
+    const isMeshed = !!(d.mesh_UIDs && (d.nexuspeer_UID || d.wlan_UIDs));
+    const clients = getConnectedClients(d);
+    const childRepeaters = repeatersByUplink[d.UID] || [];
+
+    let html = '<div class="tree-item">';
+    html += '<div class="tree-header">';
+    html += '<span class="tree-icon">' + (online ? '📡' : '📡') + '</span>';
+    html += '<div style="flex:1">';
+    html += '<div class="tree-name">' + (online ? '' : '<span style="opacity:0.5">') + esc(name) + (online ? '' : '</span>');
+    if (model) html += ' <span class="tag type">' + esc(model) + '</span>';
+    html += isMeshed ? ' <span class="tag mesh">meshed</span>' : ' <span class="tag not-meshed">not meshed</span>';
+    html += '</div>';
+    if (d.ip) html += '<div class="tree-detail">' + esc(d.ip) + '</div>';
+    if (uplink) {
+      html += '<div class="tree-link-type">↑ ' + esc(uplink.mediaType) + (uplink.speed && uplink.speed !== '0' ? ' <span class="speed">' + esc(uplink.speed) + ' Mbit/s</span>' : '') + ' via ' + esc(uplink.interface || uplink.name) + '</div>';
+    }
+    html += '</div></div>';
+
+    html += renderNodeClients(clients);
+
+    if (childRepeaters.length) {
+      html += '<div class="tree-children">';
+      for (const cr of childRepeaters) {
+        html += renderRepeaterNode(cr);
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  // Render full tree
+  let html = '<div class="tree-node">';
+
+  // Master node
+  html += '<div class="tree-item">';
+  html += '<div class="tree-header">';
+  html += '<span class="tree-icon">🏠</span>';
+  html += '<div style="flex:1">';
+  html += '<div class="tree-name">' + esc(master ? (master.friendly_name || master.name || 'Fritz!Box') : 'Fritz!Box') + ' <span class="tag mesh">master</span></div>';
+  if (master?.ip) html += '<div class="tree-detail">' + esc(master.ip) + '</div>';
+  html += '</div></div>';
+
+  // Master's direct clients
+  const masterClients = getMasterClients();
+  if (masterClients.length) {
+    const id = 'clients-' + (clientIdCounter++);
+    html += '<div class="tree-clients-summary" onclick="toggleClients(\'' + id + '\')">';
+    html += '▸ ' + masterClients.length + ' direct client' + (masterClients.length !== 1 ? 's' : '') + '</div>';
+    html += '<div class="tree-clients" id="' + id + '">';
+    for (const c of masterClients) {
+      const dot = c.online ? '<span class="dot on" style="display:inline-block;width:5px;height:5px;"></span>' : '<span class="dot off" style="display:inline-block;width:5px;height:5px;"></span>';
+      html += '<div class="tree-client-item">' + dot + ' ' + esc(c.name);
+      if (c.ip) html += ' <span style="color:var(--text-dim)">(' + esc(c.ip) + ')</span>';
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+  html += '</div>';
+
+  // Repeaters connected directly to master
+  const masterRepeaters = repeatersByUplink['master'] || (master ? (repeatersByUplink[master.UID] || []) : []);
+  // Also include any repeaters not accounted for
+  const assignedRepeaters = new Set();
+  for (const key of Object.keys(repeatersByUplink)) {
+    for (const r of repeatersByUplink[key]) assignedRepeaters.add(r.UID);
+  }
+  const unassigned = repeaters.filter(r => !assignedRepeaters.has(r.UID));
+  const topLevelRepeaters = [...masterRepeaters, ...unassigned];
+
+  if (topLevelRepeaters.length) {
+    html += '<div class="tree-children">';
+    for (const r of topLevelRepeaters) {
+      html += renderRepeaterNode(r);
+    }
+    html += '</div>';
+  }
+
+  // Non-meshed repeaters (offline, never paired)
+  const nonMeshedRepeaters = allDevices.filter(d => d.isRepeater && !d.isMeshed && !d.online);
+  if (nonMeshedRepeaters.length) {
+    html += '<div style="margin-top:12px;padding-top:8px;border-top:1px solid var(--border);">';
+    html += '<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;">⚠ Not meshed / offline (' + nonMeshedRepeaters.length + ')</div>';
+    for (const d of nonMeshedRepeaters) {
+      html += '<div class="tree-client-item" style="padding:3px 0;"><span class="dot off" style="display:inline-block;width:5px;height:5px;"></span> ' + esc(d.name) + ' <span class="tag not-meshed">not meshed</span></div>';
+    }
+    html += '</div>';
+  }
+
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+function toggleClients(id) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.classList.toggle('expanded');
+    const summary = el.previousElementSibling;
+    if (summary) {
+      summary.textContent = summary.textContent.replace(/^[▸▾]/, el.classList.contains('expanded') ? '▾' : '▸');
+    }
+  }
+}
 </script>
 </body>
 </html>
