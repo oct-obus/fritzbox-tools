@@ -374,6 +374,8 @@ let myApUid = null;
 let myApName = null;
 let myApStatus = 'pending'; // 'pending' | 'detected' | error string
 let highlightAp = false;
+let currentBssid = null;
+let bssidPollTimer = null;
 
 function loadSaved() {
   try {
@@ -462,6 +464,8 @@ function doLogout() {
   allDevices = [];
   rawLandeviceData = null;
   stopPoll();
+  stopBssidPolling();
+  currentBssid = null;
   setStatus('login-status', 'Disconnected.', '');
   document.getElementById('btn-logout').style.display = 'none';
   document.getElementById('tabs').style.display = 'none';
@@ -502,16 +506,104 @@ async function fetchLocalIps() {
   }
 }
 
+async function fetchBssid() {
+  try {
+    const resp = await fetch('/wifi-bssid');
+    const data = await resp.json();
+    const bssid = data.bssid;
+    if (!bssid || bssid === '00:00:00:00:00:00' || bssid === '02:00:00:00:00:00') {
+      currentBssid = null;
+      return;
+    }
+    currentBssid = bssid.toLowerCase();
+    const prevApUid = myApUid;
+    matchBssidToAp();
+    if (myApUid !== prevApUid) {
+      updateApButton();
+      if (highlightAp) {
+        renderFilteredDevices();
+        if (document.getElementById('tree-card').style.display !== 'none') renderTree();
+        if (document.getElementById('manager-card').style.display !== 'none') renderMeshManager();
+      }
+    }
+  } catch (e) {
+    currentBssid = null;
+  }
+}
+
+function matchBssidToAp() {
+  if (!currentBssid || !allDevices.length) return;
+  const bssid = currentBssid;
+
+  for (const d of allDevices) {
+    if (!d.raw) continue;
+    // Direct MAC match
+    if (d.raw.mac && d.raw.mac.toLowerCase() === bssid) {
+      myApUid = d.uid;
+      myApName = d.name || d.ip || 'Unknown AP';
+      myApStatus = 'detected';
+      return;
+    }
+    // Check link_list entries for MAC addresses of connected interfaces
+    const linkList = d.raw.link_list;
+    if (linkList && Array.isArray(linkList)) {
+      for (const ll of linkList) {
+        const entries = ll.entry || [];
+        for (const e of entries) {
+          if (e.local_mac_address && e.local_mac_address.toLowerCase() === bssid) {
+            myApUid = d.uid;
+            myApName = d.name || d.ip || 'Unknown AP';
+            myApStatus = 'detected';
+            return;
+          }
+          if (e.remote_mac_address && e.remote_mac_address.toLowerCase() === bssid) {
+            const remoteDev = allDevices.find(ad => ad.raw?.mac?.toLowerCase() === e.remote_mac_address.toLowerCase());
+            if (remoteDev) {
+              myApUid = remoteDev.uid;
+              myApName = remoteDev.name || remoteDev.ip || 'Unknown AP';
+              myApStatus = 'detected';
+              return;
+            }
+          }
+        }
+      }
+    }
+    // Check mesh node interface MACs from mesh topology data
+    if (d.raw.meshNode?.node_interfaces) {
+      for (const iface of d.raw.meshNode.node_interfaces) {
+        if (iface.mac_address && iface.mac_address.toLowerCase() === bssid) {
+          myApUid = d.uid;
+          myApName = d.name || d.ip || 'Unknown AP';
+          myApStatus = 'detected';
+          return;
+        }
+      }
+    }
+  }
+}
+
+function startBssidPolling() {
+  if (bssidPollTimer) clearInterval(bssidPollTimer);
+  fetchBssid();
+  bssidPollTimer = setInterval(() => fetchBssid(), 5000);
+}
+
+function stopBssidPolling() {
+  if (bssidPollTimer) { clearInterval(bssidPollTimer); bssidPollTimer = null; }
+}
+
 function detectMyDevice() {
+  const bssidHasAp = currentBssid && myApUid && myApStatus === 'detected';
+  // Always re-detect which device is this phone (IP match)
   myDeviceUid = null;
-  myApUid = null;
-  myApName = null;
-  if (!localIps.length) { myApStatus = 'No local IPs found'; return; }
-  if (!allDevices.length) { myApStatus = 'No devices loaded'; return; }
+  if (!bssidHasAp) { myApUid = null; myApName = null; }
+  if (!localIps.length) { if (!bssidHasAp) myApStatus = 'No local IPs found'; return; }
+  if (!allDevices.length) { if (!bssidHasAp) myApStatus = 'No devices loaded'; return; }
   // Find the device whose IP matches one of our local IPs
   for (const d of allDevices) {
     if (d.ip && localIps.includes(d.ip)) {
       myDeviceUid = d.uid;
+      if (bssidHasAp) return; // BSSID already found AP, just needed myDeviceUid
       // Find which AP/repeater this device connects to via its raw link_list
       const raw = d.raw;
       if (raw?.link_list && Array.isArray(raw.link_list) && raw.link_list.length) {
@@ -534,7 +626,7 @@ function detectMyDevice() {
       return;
     }
   }
-  myApStatus = 'IP ' + localIps.join(', ') + ' not in device list';
+  if (!bssidHasAp) myApStatus = 'IP ' + localIps.join(', ') + ' not in device list';
 }
 
 function parseMeshNodes(mesh) {
@@ -590,6 +682,7 @@ async function loadDevices() {
     const meshNodes = parseMeshNodes(mesh);
     allDevices = parseDeviceList(data, meshNodes);
     detectMyDevice();
+    if (!bssidPollTimer) startBssidPolling();
     renderFilteredDevices();
     // Also re-render tree and manager if visible
     if (document.getElementById('tree-card').style.display !== 'none') renderTree();

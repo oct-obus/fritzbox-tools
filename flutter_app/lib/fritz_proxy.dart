@@ -8,6 +8,7 @@ import 'package:shelf_router/shelf_router.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:crypto/crypto.dart' show Hmac, sha256;
+import 'package:network_info_plus/network_info_plus.dart';
 
 /// Local HTTP server that serves the web UI and proxies Fritz!Box API calls.
 class FritzProxy {
@@ -45,6 +46,17 @@ class FritzProxy {
         return _jsonResponse({'ips': ips});
       } catch (e) {
         return _jsonResponse({'error': 'Failed to get local IPs: $e'});
+      }
+    });
+
+    // Return the device's current WiFi BSSID (for AP detection)
+    router.get('/wifi-bssid', (shelf.Request request) async {
+      try {
+        final info = NetworkInfo();
+        final bssid = await info.getWifiBSSID();
+        return _jsonResponse({'bssid': bssid});
+      } catch (e) {
+        return _jsonResponse({'bssid': null, 'error': e.toString()});
       }
     });
 
