@@ -512,6 +512,11 @@ function findUplinkFromLinkList(d, meshUidToDevice) {
   return null;
 }
 
+function checkIsMeshed(d) {
+  const meshUid = d.mesh_UIDs || '';
+  return !!(meshUid && (d.nexuspeer_UID || hasUplink(d)));
+}
+
 function toggleRepeaterFilter() {
   showRepeatersOnly = !showRepeatersOnly;
   document.getElementById('btn-filter-repeaters').classList.toggle('active', showRepeatersOnly);
@@ -809,13 +814,14 @@ function renderTree() {
     const name = d.friendly_name || d.name || '?';
     const model = d.modelname || '';
     const online = d.active === '1';
-    const isMeshed = !!(d.mesh_UIDs && (d.nexuspeer_UID || d.wlan_UIDs));
+    const parsedDev = allDevices.find(ad => ad.uid === d.UID);
+    const isMeshed = parsedDev ? parsedDev.isMeshed : checkIsMeshed(d);
     const clients = getConnectedClients(d);
     const childRepeaters = repeatersByUplink[d.UID] || [];
 
     let html = '<div class="tree-item">';
     html += '<div class="tree-header">';
-    html += '<span class="tree-icon">' + (online ? '📡' : '📡') + '</span>';
+    html += '<span class="tree-icon"' + (online ? '' : ' style="opacity:0.4"') + '>' + (online ? '📡' : '📴') + '</span>';
     html += '<div style="flex:1">';
     html += '<div class="tree-name">' + (online ? '' : '<span style="opacity:0.5">') + esc(name) + (online ? '' : '</span>');
     if (model) html += ' <span class="tag type">' + esc(model) + '</span>';
@@ -870,7 +876,10 @@ function renderTree() {
   html += '</div>';
 
   // Repeaters connected directly to master
-  const masterRepeaters = repeatersByUplink['master'] || (master ? (repeatersByUplink[master.UID] || []) : []);
+  const masterRepeaters = [
+    ...(repeatersByUplink['master'] || []),
+    ...(master ? (repeatersByUplink[master.UID] || []) : []),
+  ];
   // Also include any repeaters not accounted for
   const assignedRepeaters = new Set();
   for (const key of Object.keys(repeatersByUplink)) {
