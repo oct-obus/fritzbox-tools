@@ -1145,10 +1145,44 @@ function renderTree() {
   }
 
   // Build tree structure: master at top, repeaters grouped by uplink
+  // Resolve parent using mesh topology first (consistent with Devices tab), fallback to link_list
+  function resolveParentUid(r) {
+    const meshUid = r.mesh_UIDs || '';
+    // Try mesh topology first
+    if (meshUid && parsedMeshNodes[meshUid]) {
+      const node = parsedMeshNodes[meshUid];
+      for (const iface of (node.interfaces || [])) {
+        if (iface.type === 'WLAN' || iface.type === 'LAN') {
+          for (const link of (iface.node_links || [])) {
+            if (link.type === 'UPLINK' || link.node_interface_type === 'UPLINK') {
+              const targetMeshUid = link.node_uid;
+              const targetDev = byMeshUid[targetMeshUid];
+              if (targetDev) return targetDev.UID;
+              // If target is the master mesh node
+              const targetNode = parsedMeshNodes[targetMeshUid];
+              if (targetNode && targetNode.isMaster) return master?.UID || 'master';
+              return 'master';
+            }
+          }
+        }
+      }
+    }
+    // Fallback: use link_list remote_dev_mesh_uid
+    const linkList = r.link_list;
+    if (Array.isArray(linkList) && linkList.length) {
+      const entries = linkList[0]?.entry || [];
+      const uplinkEntry = entries.find(e => e.is_uplink === '1');
+      if (uplinkEntry?.remote_dev_mesh_uid) {
+        const parentDev = byMeshUid[uplinkEntry.remote_dev_mesh_uid];
+        if (parentDev) return parentDev.UID;
+      }
+    }
+    return 'master';
+  }
+
   const repeatersByUplink = {};
   for (const r of repeaters) {
-    const uplink = getUplinkInfo(r);
-    const parentKey = uplink ? (byMeshUid[r.link_list?.[0]?.entry?.find(e => e.is_uplink === '1')?.remote_dev_mesh_uid]?.UID || 'master') : 'master';
+    const parentKey = resolveParentUid(r);
     if (!repeatersByUplink[parentKey]) repeatersByUplink[parentKey] = [];
     repeatersByUplink[parentKey].push(r);
   }
