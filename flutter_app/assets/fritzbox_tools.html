@@ -74,14 +74,14 @@
   .device-list { margin-top: 8px; }
   .device-item {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     padding: 8px 0;
     border-bottom: 1px solid var(--border);
     gap: 8px;
   }
   .device-item:last-child { border-bottom: none; }
   .device-info { flex: 1; min-width: 0; }
-  .device-name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .device-name { font-size: 13px; font-weight: 500; word-break: break-word; }
   .device-detail { font-size: 11px; color: var(--text-dim); font-family: monospace; }
   .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
   .dot.on { background: var(--green); }
@@ -98,6 +98,12 @@
   .tag.type { background: rgba(139,148,158,0.1); color: var(--text-dim); }
   .tag.repeater { background: rgba(210,153,34,0.15); color: var(--orange); }
   .tag.not-meshed { background: rgba(248,81,73,0.15); color: var(--red); }
+  .device-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+  .tree-icon-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; margin-top: 4px; }
+  .tree-icon-dot.master { background: var(--accent); }
+  .tree-icon-dot.online { background: var(--green); }
+  .tree-icon-dot.offline { background: var(--text-dim); opacity: 0.4; }
+  .settings-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 12px; }
   .uplink-info { font-size: 10px; color: var(--text-dim); margin-top: 1px; }
   .uplink-info .via { color: var(--accent); }
   .filter-btn {
@@ -161,8 +167,23 @@
 </head>
 <body>
 <div class="container">
-  <h1>Fritz!Box Tools</h1>
-  <p class="subtitle">Device list and mesh pairing</p>
+  <div class="flex-between" style="margin-bottom:4px;">
+    <div>
+      <h1 style="margin-bottom:0;">Fritz!Box Tools</h1>
+      <p class="subtitle" style="margin-bottom:0;">Device list and mesh pairing</p>
+    </div>
+    <button onclick="toggleSettings()" id="btn-settings" style="font-size:13px; padding:4px 10px;">Aa</button>
+  </div>
+
+  <div class="card" id="settings-card" style="display:none;">
+    <h2>Display</h2>
+    <label>UI Scale</label>
+    <div style="display:flex; align-items:center; gap:10px;">
+      <input type="range" id="ui-scale" min="0.8" max="1.4" step="0.1" value="1.0"
+        style="flex:1; accent-color:var(--accent);" oninput="applyScale(this.value)">
+      <span id="scale-value" style="font-size:12px; font-family:monospace; min-width:30px;">1.0</span>
+    </div>
+  </div>
 
   <div class="card" id="login-card">
     <h2>Connect</h2>
@@ -197,13 +218,14 @@
     <div class="flex-between">
       <h2>LAN Devices <span class="count" id="device-count"></span></h2>
       <div style="display:flex; gap:6px; align-items:center;">
-        <button class="filter-btn" id="btn-filter-repeaters" onclick="toggleRepeaterFilter()">📡 Repeaters</button>
+        <button class="filter-btn" id="btn-filter-repeaters" onclick="toggleRepeaterFilter()">Repeaters</button>
         <button onclick="loadDevices()">Refresh</button>
       </div>
     </div>
     <div class="device-list" id="devices-content">
       <div class="empty">Loading...</div>
     </div>
+    <div class="status" id="mesh-load-warning" style="display:none;"></div>
   </div>
 
   <div class="card" id="tree-card" style="display:none;">
@@ -249,6 +271,7 @@ let initialPeers = new Set();
 let meshData = null;
 let allDevices = [];
 let showRepeatersOnly = false;
+let meshLoadError = null;
 
 function loadSaved() {
   try {
@@ -348,13 +371,19 @@ function doLogout() {
 
 // --- Mesh topology ---
 async function loadMeshTopology() {
+  meshLoadError = null;
   if (!currentSid || !currentHost) return null;
   try {
     const url = proxyUrl(currentHost, '/data/mesh?sid=' + currentSid);
     const resp = await fritzFetch(url);
-    return await resp.json();
+    const data = await resp.json();
+    if (data.error) {
+      meshLoadError = data.error;
+      return null;
+    }
+    return data;
   } catch (e) {
-    console.log('Mesh topology load failed:', e);
+    meshLoadError = e.message;
     return null;
   }
 }
@@ -406,11 +435,21 @@ async function loadDevices() {
       loadMeshTopology(),
     ]);
     const data = await devResp.json();
+    if (data.error) throw new Error(data.error);
     rawLandeviceData = data;
     meshData = mesh;
     const meshNodes = parseMeshNodes(mesh);
     allDevices = parseDeviceList(data, meshNodes);
     renderFilteredDevices();
+    // Show mesh topology warning if applicable
+    const warnEl = document.getElementById('mesh-load-warning');
+    if (meshLoadError) {
+      warnEl.style.display = 'block';
+      warnEl.textContent = 'Mesh topology load failed: ' + meshLoadError;
+      warnEl.className = 'status warn';
+    } else {
+      warnEl.style.display = 'none';
+    }
     // Also re-render tree if visible
     if (document.getElementById('tree-card').style.display !== 'none') renderTree();
   } catch (e) {
@@ -558,22 +597,23 @@ function renderDevices(devices) {
     let tags = '';
     if (d.isRepeater) {
       tags += d.isMeshed
-        ? ' <span class="tag mesh">meshed</span>'
-        : ' <span class="tag not-meshed">not meshed</span>';
-      if (d.modelname) tags += ' <span class="tag type">' + esc(d.modelname) + '</span>';
-      else tags += ' <span class="tag repeater">repeater</span>';
+        ? '<span class="tag mesh">meshed</span>'
+        : '<span class="tag not-meshed">not meshed</span>';
+      if (d.modelname) tags += '<span class="tag type">' + esc(d.modelname) + '</span>';
+      else tags += '<span class="tag repeater">repeater</span>';
     }
+    const tagsHtml = tags ? '<div class="device-tags">' + tags + '</div>' : '';
     const detail = esc(d.ip || '-') + ' &middot; ' + esc(d.mac || '-');
     let uplink = '';
     if (d.isRepeater && d.uplinkName) {
       uplink = '<div class="uplink-info">↑ via <span class="via">' + esc(d.uplinkName) + '</span></div>';
     } else if (d.isRepeater && !d.isMeshed) {
-      uplink = '<div class="uplink-info" style="color:var(--red);">⚠ not paired</div>';
+      uplink = '<div class="uplink-info" style="color:var(--red);">not paired</div>';
     }
     return '<div class="device-item">' + dot +
       '<div class="device-info"><div class="device-name">' + esc(d.name || '(unknown)') + '</div>' +
-      '<div class="device-detail">' + detail + '</div>' + uplink + '</div>' +
-      tags + '</div>';
+      '<div class="device-detail">' + detail + '</div>' + uplink + tagsHtml + '</div>' +
+      '</div>';
   }).join('');
 }
 
@@ -821,7 +861,7 @@ function renderTree() {
 
     let html = '<div class="tree-item">';
     html += '<div class="tree-header">';
-    html += '<span class="tree-icon"' + (online ? '' : ' style="opacity:0.4"') + '>' + (online ? '📡' : '📴') + '</span>';
+    html += online ? '<span class="tree-icon-dot online"></span>' : '<span class="tree-icon-dot offline"></span>';
     html += '<div style="flex:1">';
     html += '<div class="tree-name">' + (online ? '' : '<span style="opacity:0.5">') + esc(name) + (online ? '' : '</span>');
     if (model) html += ' <span class="tag type">' + esc(model) + '</span>';
@@ -852,7 +892,7 @@ function renderTree() {
   // Master node
   html += '<div class="tree-item">';
   html += '<div class="tree-header">';
-  html += '<span class="tree-icon">🏠</span>';
+  html += '<span class="tree-icon-dot master"></span>';
   html += '<div style="flex:1">';
   html += '<div class="tree-name">' + esc(master ? (master.friendly_name || master.name || 'Fritz!Box') : 'Fritz!Box') + ' <span class="tag mesh">master</span></div>';
   if (master?.ip) html += '<div class="tree-detail">' + esc(master.ip) + '</div>';
@@ -900,7 +940,7 @@ function renderTree() {
   const nonMeshedRepeaters = allDevices.filter(d => d.isRepeater && !d.isMeshed && !d.online);
   if (nonMeshedRepeaters.length) {
     html += '<div style="margin-top:12px;padding-top:8px;border-top:1px solid var(--border);">';
-    html += '<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;">⚠ Not meshed / offline (' + nonMeshedRepeaters.length + ')</div>';
+    html += '<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;">Not meshed / offline (' + nonMeshedRepeaters.length + ')</div>';
     for (const d of nonMeshedRepeaters) {
       html += '<div class="tree-client-item" style="padding:3px 0;"><span class="dot off" style="display:inline-block;width:5px;height:5px;"></span> ' + esc(d.name) + ' <span class="tag not-meshed">not meshed</span></div>';
     }
@@ -921,6 +961,26 @@ function toggleClients(id) {
     }
   }
 }
+function toggleSettings() {
+  const card = document.getElementById('settings-card');
+  card.style.display = card.style.display === 'none' ? 'block' : 'none';
+}
+
+function applyScale(val) {
+  val = parseFloat(val);
+  document.querySelector('.container').style.zoom = val;
+  document.getElementById('scale-value').textContent = val.toFixed(1);
+  document.getElementById('ui-scale').value = val;
+  localStorage.setItem('fritz_ui_scale', val.toString());
+}
+
+(function loadScale() {
+  const saved = localStorage.getItem('fritz_ui_scale');
+  if (saved) {
+    const val = parseFloat(saved);
+    if (val >= 0.8 && val <= 1.4) applyScale(val);
+  }
+})();
 </script>
 </body>
 </html>
