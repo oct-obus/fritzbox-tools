@@ -107,6 +107,33 @@ Shared auth module used by all scripts. Provides:
 - REST API helpers (GET, PUT)
 - TR-064 SOAP client with HTTP Digest auth
 
+### export_parser.py
+
+Parses and decrypts Fritz!Box `.export` settings backup files. Supports all section types and both encryption layers found in the firmware.
+
+```bash
+# Parse and show contents (uses default key for no-password exports)
+python3 export_parser.py backup.export
+
+# Decrypt a password-protected export
+python3 export_parser.py -p mypassword backup.export
+
+# Extract all sections to a directory
+python3 export_parser.py -o ./extracted/ backup.export
+
+# Verbose mode (shows AES key, IV, CRC32 check)
+python3 export_parser.py -v backup.export
+```
+
+Handles:
+- `CFGFILE` — plaintext config sections
+- `B64FILE` / `BINFILE` — base64/binary encoded sections
+- `CRYPTEDB64FILE` / `CRYPTEDBINFILE` — AES-256-CBC encrypted sections
+- avmnexus/boxcert sections (hardcoded AES-128 key)
+- CRC32 footer verification
+
+Requires: Python 3.9+, `cryptography` package (`pip install cryptography`)
+
 ## Auth Flow
 
 1. `GET /login_sid.lua?version=2` to get challenge
