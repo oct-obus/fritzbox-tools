@@ -1,9 +1,8 @@
 name: Build iOS IPA
 
 on:
-  push:
-    tags:
-      - 'v*'
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -35,33 +34,68 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Build iOS (no codesign)
-        run: flutter build ios --release --no-codesign
-
-      - name: Create unsigned IPA
+      - name: Disable code signing
         run: |
-          mkdir -p Payload
-          cp -r build/ios/iphoneos/Runner.app Payload/
-          zip -r FritzTools.ipa Payload
-          rm -rf Payload
+          echo 'CODE_SIGNING_ALLOWED=NO' >> ios/Flutter/Release.xcconfig
+          echo 'CODE_SIGNING_REQUIRED=NO' >> ios/Flutter/Release.xcconfig
+          echo 'CODE_SIGN_IDENTITY=' >> ios/Flutter/Release.xcconfig
+
+      - name: Build iOS (no codesign)
+        run: |
+          flutter build ios --release --no-codesign 2>&1 || true
+
+          RUNNER_APP=""
+          for app in $(find build -name "Runner.app" -type d 2>/dev/null); do
+            if [ -f "$app/Runner" ]; then
+              RUNNER_APP="$app"
+              break
+            fi
+          done
+
+          if [ -z "$RUNNER_APP" ]; then
+            echo "❌ No Runner.app with binary found"
+            find build -name "Runner.app" -type d 2>/dev/null
+            exit 1
+          fi
+
+          echo "✅ Found Runner.app at: $RUNNER_APP"
+          ls -la "$RUNNER_APP/"
+
+          mkdir -p build/ios/iphoneos
+          if [ "$RUNNER_APP" != "build/ios/iphoneos/Runner.app" ]; then
+            ditto "$RUNNER_APP" build/ios/iphoneos/Runner.app
+          fi
+
+      - name: Verify IPA contents
+        run: |
+          APP=build/ios/iphoneos/Runner.app
+          ls -la "$APP/Runner" || { echo "FATAL: No Runner binary!"; exit 1; }
+          ls -la "$APP/Assets.car" || { echo "FATAL: No Assets.car (no icons)!"; exit 1; }
+          ls -la "$APP/Info.plist" || { echo "FATAL: No Info.plist!"; exit 1; }
+          echo "✅ Bundle looks good"
+          du -sh "$APP"
+
+      - name: Package IPA
+        run: |
+          cd build/ios/iphoneos
+          mkdir Payload
+          mv Runner.app Payload/
+          zip -qq -r -9 --symlinks FritzTools.ipa Payload
 
       - name: Upload IPA artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
-          name: FritzTools.ipa
-          path: flutter_app/FritzTools.ipa
-          archive: false
-          retention-days: 90
+          name: FritzTools-unsigned
+          path: flutter_app/build/ios/iphoneos/FritzTools.ipa
 
-      - name: Create release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Upload IPA to release
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: flutter_app/FritzTools.ipa
-          generate_release_notes: true
+          files: flutter_app/build/ios/iphoneos/FritzTools.ipa
 
       - name: Trigger app-source update
-        if: startsWith(github.ref, 'refs/tags/')
+        if: github.event_name == 'release'
         run: |
           curl -sS -X POST \
             -H "Accept: application/vnd.github+json" \

@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
 *.json
+# But allow Xcode asset catalog manifests (required for app icons)
+!flutter_app/ios/**/Contents.json
