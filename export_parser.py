@@ -209,13 +209,19 @@ def parse_export(text: str, verbose: bool = False) -> ExportFile:
     result.header.raw = "\n".join(header_lines)
 
     # Extract IV from Password field
+    # For encrypted exports, Password= contains a hex-encoded AES IV.
+    # For unencrypted exports, Password= contains the device password in
+    # AVM's $$$$-encoded format — not a hex IV.
     pw_hex = result.header.fields.get("Password", "")
-    if pw_hex and len(pw_hex) >= 32:
+    if pw_hex and not pw_hex.startswith("$$$$") and len(pw_hex) >= 32:
         try:
             result.header.password_iv = bytes.fromhex(pw_hex[:32])
         except ValueError:
             if verbose:
                 print(f"  [warn] could not decode Password hex: {pw_hex}")
+    elif pw_hex and pw_hex.startswith("$$$$"):
+        if verbose:
+            print("  [info] Password= contains $$$$-encoded device password (unencrypted export)")
 
     # --- Parse sections ---
     while idx < len(lines):
@@ -256,6 +262,9 @@ def parse_export(text: str, verbose: bool = False) -> ExportFile:
         idx += 1
 
     # --- CRC32 verification ---
+    # Note: the firmware's CRC includes null terminators from internal string
+    # processing that don't appear in the file. Our simple CRC32 of the raw
+    # file content may not match. The check still catches truncation/corruption.
     end_marker = "**** END OF EXPORT"
     end_pos = text.find(end_marker)
     if end_pos > 0 and result.crc_expected:
@@ -294,10 +303,13 @@ def process_export(
 
     # IV
     iv = export.header.password_iv
-    if not iv:
+    has_encrypted = any(s.kind.startswith("CRYPTED") for s in export.sections)
+    if not iv and has_encrypted:
         print("Warning: no IV found in Password= header; decryption may fail.",
               file=sys.stderr)
         iv = b"\x00" * 16
+    elif not iv:
+        iv = b"\x00" * 16  # placeholder — not used for unencrypted exports
 
     # Derive AES key
     pw = password if password is not None else DEFAULT_PASSWORD
