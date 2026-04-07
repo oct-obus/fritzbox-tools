@@ -37,6 +37,25 @@ git tag v1.2.5 && git push origin v1.2.5
 
 Standalone CLI tools for Fritz!Box APIs. No external dependencies (stdlib only).
 
+### repeater_uplink.py
+
+Control which AP a Fritz!Repeater connects to. Authenticates directly to the repeater's web UI.
+
+```bash
+# List all repeaters from the master Fritz!Box
+python3 repeater_uplink.py list-repeaters -m 192.168.178.1 -p "password"
+
+# Show current uplink status of a repeater
+python3 repeater_uplink.py status -r 192.168.178.46 -p "password"
+
+# Scan for available APs from the repeater's perspective
+python3 repeater_uplink.py scan -r 192.168.178.46 -p "password"
+
+# Change which AP the repeater connects to
+python3 repeater_uplink.py set -r 192.168.178.46 \
+    --bssid AA:BB:CC:DD:EE:FF --ssid MyWiFi --psk "wifipass"
+```
+
 ### fritzbox_api.py
 
 Fetch data from any `/api/v0/generic/` endpoint.
