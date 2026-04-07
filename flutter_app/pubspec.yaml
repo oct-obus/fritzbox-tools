@@ -1,7 +1,7 @@
 name: fritz_tools
-description: "Fritz!Box tools — device list and mesh pairing"
+description: "Fritz!Box tools — device list, mesh management & diagnostics"
 publish_to: 'none'
-version: 1.2.5+10
+version: 1.3.0+11
 
 environment:
   sdk: ^3.8.0

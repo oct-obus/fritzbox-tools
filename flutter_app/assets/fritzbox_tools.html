@@ -250,7 +250,7 @@
   <div class="flex-between" style="margin-bottom:4px;">
     <div>
       <h1 style="margin-bottom:0;">Fritz!Box Tools</h1>
-      <p class="subtitle" style="margin-bottom:0;">Device list and mesh pairing</p>
+      <p class="subtitle" style="margin-bottom:0;">Device list, mesh management &amp; diagnostics</p>
     </div>
     <button onclick="toggleSettings()" id="btn-settings" style="font-size:13px; padding:4px 10px;">Aa</button>
   </div>
@@ -272,6 +272,21 @@
       <input type="number" id="bssid-interval-input" min="1" max="60" step="1" value="5"
         style="width:55px; text-align:center; font-family:monospace; font-size:12px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:4px; padding:2px 4px;"
         oninput="applyBssidInterval(this.value)">
+    </div>
+    <div style="margin-top:14px; border-top:1px solid var(--border); padding-top:10px;">
+      <h2 style="font-size:14px; margin-bottom:8px;">Advanced Features</h2>
+      <label style="display:flex; align-items:center; gap:8px; margin-bottom:10px; cursor:pointer;">
+        <input type="checkbox" id="toggle-repeater-controls" style="width:auto; margin:0;" onchange="saveFeatureToggles()">
+        <div><span style="font-size:12px;">Repeater Controls</span><br><span style="font-size:10px; color:var(--text-dim)">Reboot repeaters &amp; change uplink AP</span></div>
+      </label>
+      <label style="display:flex; align-items:center; gap:8px; margin-bottom:10px; cursor:pointer;">
+        <input type="checkbox" id="toggle-debug-mode" style="width:auto; margin:0;" onchange="saveFeatureToggles()">
+        <div><span style="font-size:12px;">Debug Mode</span><br><span style="font-size:10px; color:var(--text-dim)">Send dbg=1 with data.lua requests for diagnostics</span></div>
+      </label>
+      <label style="display:flex; align-items:center; gap:8px; margin-bottom:10px; cursor:pointer;">
+        <input type="checkbox" id="toggle-extended-info" style="width:auto; margin:0;" onchange="saveFeatureToggles()">
+        <div><span style="font-size:12px;">Extended Device Info</span><br><span style="font-size:10px; color:var(--text-dim)">Query config paths for richer device details</span></div>
+      </label>
     </div>
   </div>
 
@@ -338,11 +353,7 @@
     <div id="manager-content">
       <div class="empty">Loading...</div>
     </div>
-    <div class="mgr-note" id="mgr-note" style="display:none;">
-      Repeater uplink targets cannot be changed via API. To re-route a repeater
-      through a different node, use the repeater's own web UI:
-      Home Network &gt; Mesh &gt; Mesh Settings &gt; select upstream network.
-    </div>
+    <div class="mgr-note" id="mgr-note" style="display:none;"></div>
   </div>
 
   <div class="card" id="mesh-card" style="display:none;">
@@ -395,6 +406,30 @@ let myApStatus = 'pending'; // 'pending' | 'detected' | error string
 let highlightAp = false;
 let currentBssid = null;
 let bssidPollTimer = null;
+let featureToggles = { repeaterControls: false, debugMode: false, extendedInfo: false };
+let repeaterSids = {}; // { ip: sid }
+
+function saveFeatureToggles() {
+  featureToggles.repeaterControls = document.getElementById('toggle-repeater-controls').checked;
+  featureToggles.debugMode = document.getElementById('toggle-debug-mode').checked;
+  featureToggles.extendedInfo = document.getElementById('toggle-extended-info').checked;
+  localStorage.setItem('fritz_feature_toggles', JSON.stringify(featureToggles));
+  // Re-render manager if visible
+  if (document.getElementById('manager-card').style.display !== 'none') renderMeshManager();
+}
+
+function loadFeatureToggles() {
+  try {
+    const saved = localStorage.getItem('fritz_feature_toggles');
+    if (saved) {
+      const t = JSON.parse(saved);
+      featureToggles = { ...featureToggles, ...t };
+      document.getElementById('toggle-repeater-controls').checked = featureToggles.repeaterControls;
+      document.getElementById('toggle-debug-mode').checked = featureToggles.debugMode;
+      document.getElementById('toggle-extended-info').checked = featureToggles.extendedInfo;
+    }
+  } catch (e) {}
+}
 
 function loadSaved() {
   try {
@@ -501,8 +536,17 @@ async function loadMeshTopology() {
   meshLoadError = null;
   if (!currentSid || !currentHost) return null;
   try {
-    const url = proxyUrl(currentHost, '/data/mesh?sid=' + currentSid);
-    const resp = await fritzFetch(url);
+    let resp;
+    if (featureToggles.debugMode) {
+      resp = await fritzFetch(proxyUrl(currentHost, '/data-post'), {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({sid: currentSid, page: 'mesh', dbg: true}),
+      });
+    } else {
+      const url = proxyUrl(currentHost, '/data/mesh?sid=' + currentSid);
+      resp = await fritzFetch(url);
+    }
     const data = await resp.json();
     if (data.error) {
       meshLoadError = data.error;
@@ -1023,6 +1067,7 @@ function appendLog(msg) {
 }
 
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function escJs(s) { return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/</g, '\\x3c'); }
 function time() { return new Date().toLocaleTimeString(); }
 
 // --- Tree view ---
@@ -1382,6 +1427,14 @@ function renderMeshManager() {
       html += '<div class="mgr-uplink" style="color:var(--red)">not paired</div>';
     }
 
+    // Repeater action buttons (when enabled in settings)
+    if (featureToggles.repeaterControls && rep.ip) {
+      html += '<div style="display:flex; gap:6px; margin-top:6px;" onclick="event.stopPropagation()">';
+      html += '<button style="font-size:10px; padding:3px 8px;" onclick="showUplinkControl(\'' + esc(rep.ip) + '\', \'' + esc(rep.name) + '\')">Change Uplink</button>';
+      html += '<button class="danger" style="font-size:10px; padding:3px 8px;" onclick="rebootRepeater(\'' + esc(rep.ip) + '\', \'' + esc(rep.name) + '\')">Reboot</button>';
+      html += '</div>';
+    }
+
     // Connected clients
     const rawDev = rawList.find(d => d.UID === rep.uid);
     if (rawDev) {
@@ -1447,6 +1500,12 @@ function renderMeshManager() {
   }
 
   el.innerHTML = html;
+  if (featureToggles.repeaterControls) {
+    noteEl.innerHTML = 'Enable <b>Repeater Controls</b> in Settings to manage uplinks and reboot devices. ' +
+      '<br><button class="danger" style="font-size:10px; padding:3px 8px; margin-top:6px;" onclick="rebootMaster()">Reboot Fritz!Box</button>';
+  } else {
+    noteEl.innerHTML = 'Enable <b>Repeater Controls</b> in Settings to manage uplinks and reboot repeaters from this tab.';
+  }
   noteEl.style.display = 'block';
 }
 
@@ -1514,7 +1573,197 @@ function applyBssidInterval(val) {
       document.getElementById('bssid-interval-input').value = iv;
     }
   }
+  loadFeatureToggles();
 })();
+
+// --- Repeater management ---
+async function loginToRepeater(ip) {
+  const password = document.getElementById('password').value;
+  if (!password) { showToast('Enter Fritz!Box password first'); return null; }
+  try {
+    const resp = await fritzFetch(proxyUrl(ip, '/login'), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password}),
+    });
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+    repeaterSids[ip] = data.sid;
+    return data.sid;
+  } catch (e) {
+    showToast('Repeater login failed: ' + e.message);
+    return null;
+  }
+}
+
+async function getRepeaterSid(ip) {
+  if (repeaterSids[ip]) return repeaterSids[ip];
+  return await loginToRepeater(ip);
+}
+
+async function rebootRepeater(ip, name) {
+  if (!confirm('Reboot ' + name + ' (' + ip + ')?')) return;
+  const sid = await getRepeaterSid(ip);
+  if (!sid) return;
+  try {
+    showToast('Rebooting ' + name + '...');
+    const resp = await fritzFetch(proxyUrl(ip, '/reboot'), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({sid}),
+    });
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+    showToast(name + ' is rebooting');
+    delete repeaterSids[ip];
+  } catch (e) {
+    showToast('Reboot failed: ' + e.message);
+  }
+}
+
+async function rebootMaster() {
+  if (!confirm('Reboot the Fritz!Box router? All network connections will be interrupted.')) return;
+  if (!currentSid || !currentHost) { showToast('Not connected'); return; }
+  try {
+    showToast('Rebooting Fritz!Box...');
+    const resp = await fritzFetch(proxyUrl(currentHost, '/reboot'), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({sid: currentSid}),
+    });
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+    showToast('Fritz!Box is rebooting');
+    doLogout();
+  } catch (e) {
+    showToast('Reboot failed: ' + e.message);
+  }
+}
+
+let uplinkOverlayRepeater = null;
+
+function showUplinkControl(ip, name) {
+  uplinkOverlayRepeater = {ip, name};
+  const panel = document.getElementById('detail-content');
+  let html = '<div class="detail-title">Change Uplink: ' + esc(name) + '</div>';
+  html += '<div class="detail-section">';
+  html += '<p style="font-size:11px; color:var(--text-dim); margin-bottom:10px;">Scan for available APs from this repeater\'s perspective and select a new uplink.</p>';
+  html += '<label style="font-size:11px; color:var(--text-dim);">WiFi Password (PSK)</label>';
+  html += '<input type="password" id="uplink-psk" placeholder="WiFi network password" style="margin-bottom:10px;">';
+  html += '<button class="primary" id="btn-scan-uplink" onclick="scanRepeaterUplink(\'' + esc(ip) + '\')">Scan for APs</button>';
+  html += '<div id="uplink-scan-status" class="status" style="margin-top:6px;"></div>';
+  html += '<div id="uplink-scan-results" style="margin-top:10px;"></div>';
+  html += '</div>';
+  panel.innerHTML = html;
+  document.getElementById('detail-overlay').classList.add('visible');
+}
+
+async function scanRepeaterUplink(ip) {
+  const sid = await getRepeaterSid(ip);
+  if (!sid) return;
+  const statusEl = document.getElementById('uplink-scan-status');
+  const resultsEl = document.getElementById('uplink-scan-results');
+  const btn = document.getElementById('btn-scan-uplink');
+  btn.disabled = true;
+  statusEl.textContent = 'Triggering scan...';
+  statusEl.className = 'status warn';
+
+  try {
+    // Trigger scan
+    await fritzFetch(proxyUrl(ip, '/repeater-scan'), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({sid, action: 'trigger'}),
+    });
+
+    // Poll for results (up to 15 seconds)
+    statusEl.textContent = 'Scanning...';
+    let scanData = null;
+    for (let i = 0; i < 6; i++) {
+      await new Promise(r => setTimeout(r, 2500));
+      const resp = await fritzFetch(proxyUrl(ip, '/repeater-scan'), {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({sid, action: 'poll'}),
+      });
+      scanData = await resp.json();
+      if (scanData.data && scanData.data.scanlist) break;
+    }
+
+    if (!scanData || !scanData.data || !scanData.data.scanlist) {
+      statusEl.textContent = 'No scan results. Try again.';
+      statusEl.className = 'status err';
+      btn.disabled = false;
+      return;
+    }
+
+    const scanlist = scanData.data.scanlist;
+    statusEl.textContent = scanlist.length + ' AP(s) found';
+    statusEl.className = 'status ok';
+
+    resultsEl.innerHTML = scanlist.map(ap => {
+      const signal = ap.signal || ap.rssi || '?';
+      const enc = ap.enc || ap.encryption || '?';
+      const selected = ap.selected === '1' || ap.selected === true;
+      return '<div style="padding:8px; margin-bottom:4px; background:var(--bg); border:1px solid var(--border); border-radius:6px;' + (selected ? ' border-left:3px solid var(--green);' : '') + '">' +
+        '<div style="display:flex; justify-content:space-between; align-items:center;">' +
+        '<div>' +
+        '<div style="font-size:12px; font-weight:500;">' + esc(ap.ssid || '(hidden)') + (selected ? ' <span class="tag mesh">current</span>' : '') + '</div>' +
+        '<div style="font-size:10px; color:var(--text-dim); font-family:monospace;">' + esc(ap.mac || ap.bssid || '') + ' · Signal: ' + esc(String(signal)) + ' · ' + esc(enc) + '</div>' +
+        '</div>' +
+        (selected ? '' : '<button style="font-size:11px; padding:4px 10px;" onclick="event.stopPropagation(); setRepeaterUplink(\'' + escJs(ip) + '\', \'' + escJs(ap.mac || ap.bssid || '') + '\', \'' + escJs(ap.ssid || '') + '\', \'' + escJs(enc) + '\')">Select</button>') +
+        '</div></div>';
+    }).join('');
+  } catch (e) {
+    statusEl.textContent = 'Scan failed: ' + e.message;
+    statusEl.className = 'status err';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function setRepeaterUplink(ip, bssid, ssid, encryption) {
+  const pskEl = document.getElementById('uplink-psk');
+  const psk = pskEl ? pskEl.value : '';
+  if (!psk) { showToast('Enter WiFi password (PSK) first'); return; }
+  const sid = await getRepeaterSid(ip);
+  if (!sid) return;
+  if (!confirm('Set uplink to ' + ssid + ' (' + bssid + ')?')) return;
+  try {
+    showToast('Setting uplink...');
+    const resp = await fritzFetch(proxyUrl(ip, '/repeater-set-uplink'), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({sid, bssid, ssid, psk, encryption: encryption || 'wpa2'}),
+    });
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+    showToast('Uplink changed! Repeater will reconnect.');
+    delete repeaterSids[ip];
+    closeDetail();
+    setTimeout(loadDevices, 5000);
+  } catch (e) {
+    showToast('Set uplink failed: ' + e.message);
+  }
+}
+
+async function queryRepeaterConfig(ip) {
+  const sid = await getRepeaterSid(ip);
+  if (!sid) return null;
+  try {
+    const params = new URLSearchParams({
+      sid,
+      uplink_state: 'wlan:settings/STA_uplink_state',
+      sta_mac: 'wlan:settings/STA_mac_master',
+      sta_ssid: 'wlan:settings/STA_ssid',
+      sta_configured: 'wlan:settings/STA_configured',
+    });
+    const resp = await fritzFetch(proxyUrl(ip, '/query?' + params.toString()));
+    return await resp.json();
+  } catch (e) {
+    return null;
+  }
+}
 
 // --- Device detail view ---
 function showDeviceDetail(uid) {
@@ -1610,6 +1859,28 @@ function showDeviceDetail(uid) {
       html += detailRow('WLAN Interfaces', String(wlanIds.length));
     }
     html += '</div>';
+  }
+
+  // Extended info from query.lua (when enabled)
+  if (featureToggles.extendedInfo && parsed?.isRepeater && parsed?.ip) {
+    const extId = 'ext-info-' + uid;
+    html += '<div class="detail-section">';
+    html += '<div class="detail-section-title">Extended Config</div>';
+    html += '<div id="' + extId + '" style="font-size:11px; color:var(--text-dim);">Loading...</div>';
+    html += '</div>';
+    // Load async after render
+    setTimeout(async () => {
+      const el = document.getElementById(extId);
+      if (!el) return;
+      const config = await queryRepeaterConfig(parsed.ip);
+      if (!config) { el.textContent = 'Could not query repeater config'; return; }
+      let rows = '';
+      if (config.uplink_state !== undefined) rows += detailRow('Uplink State', config.uplink_state === '3' ? 'Connected' : config.uplink_state);
+      if (config.sta_mac) rows += detailRow('Uplink BSSID', config.sta_mac);
+      if (config.sta_ssid) rows += detailRow('Uplink SSID', config.sta_ssid);
+      if (config.sta_configured !== undefined) rows += detailRow('STA Configured', config.sta_configured);
+      el.innerHTML = rows || 'No config data returned';
+    }, 100);
   }
 
   panel.innerHTML = html;

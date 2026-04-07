@@ -61,6 +61,8 @@ class FritzProxy {
     });
 
     // Login endpoint: handles PBKDF2 auth
+    // NOTE: This endpoint already works for repeater auth — <host> can be any
+    // Fritz!Box or repeater IP. No separate repeater-login endpoint is needed.
     router.post('/proxy/<host>/login', (shelf.Request request, String host) async {
       host = Uri.decodeComponent(host);
       try {
@@ -231,6 +233,153 @@ class FritzProxy {
         });
       } catch (e) {
         return _jsonResponse({'error': 'Poll failed: $e'});
+      }
+    });
+
+    // query.lua proxy — passes all query params through to Fritz!Box
+    router.get('/proxy/<host>/query', (shelf.Request request, String host) async {
+      host = Uri.decodeComponent(host);
+      try {
+        final queryString = request.url.query;
+        final resp = await http.get(
+          Uri.parse('http://$host/query.lua?$queryString'),
+          headers: {'Accept': 'application/json'},
+        );
+        return shelf.Response.ok(resp.body,
+            headers: {'Content-Type': 'application/json'});
+      } catch (e) {
+        return _jsonResponse({'error': 'query.lua call failed: $e'});
+      }
+    });
+
+    // data.lua POST proxy (general purpose, with optional dbg support)
+    router.post('/proxy/<host>/data-post', (shelf.Request request, String host) async {
+      host = Uri.decodeComponent(host);
+      try {
+        final body = json.decode(await request.readAsString()) as Map<String, dynamic>;
+        final formParts = <String>[];
+        for (final entry in body.entries) {
+          if (entry.key == 'dbg' && entry.value == true) {
+            formParts.add('dbg=1');
+          } else {
+            formParts.add(
+              '${Uri.encodeComponent(entry.key)}=${Uri.encodeComponent(entry.value.toString())}',
+            );
+          }
+        }
+        final resp = await http.post(
+          Uri.parse('http://$host/data.lua'),
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/json',
+          },
+          body: formParts.join('&'),
+        );
+        return shelf.Response.ok(resp.body,
+            headers: {'Content-Type': 'application/json'});
+      } catch (e) {
+        return _jsonResponse({'error': 'data.lua POST failed: $e'});
+      }
+    });
+
+    // Repeater reboot — two-step process with shared cookie jar
+    router.post('/proxy/<host>/reboot', (shelf.Request request, String host) async {
+      host = Uri.decodeComponent(host);
+      try {
+        final body = json.decode(await request.readAsString());
+        final sid = body['sid'] ?? '';
+
+        final client = HttpClient();
+        try {
+          // Step 1: arm the reboot action cookie via data.lua
+          final armReq = await client.postUrl(Uri.parse('http://$host/data.lua'));
+          armReq.headers.contentType = ContentType('application', 'x-www-form-urlencoded');
+          armReq.write('page=reboot&reboot=1&sid=${Uri.encodeComponent(sid)}');
+          final armResp = await armReq.close();
+          await armResp.drain<void>();
+
+          // Step 2: wait, then trigger actual reboot via reboot.lua
+          await Future<void>.delayed(const Duration(milliseconds: 500));
+
+          final rebootReq = await client.postUrl(Uri.parse('http://$host/reboot.lua'));
+          rebootReq.headers.contentType = ContentType('application', 'x-www-form-urlencoded');
+          rebootReq.write('ajax=1&sid=${Uri.encodeComponent(sid)}&no_sidrenew=1');
+          final rebootResp = await rebootReq.close();
+          await rebootResp.drain<void>();
+
+          return _jsonResponse({'success': true, 'message': 'Reboot initiated'});
+        } finally {
+          client.close();
+        }
+      } catch (e) {
+        return _jsonResponse({'error': 'Reboot failed: $e'});
+      }
+    });
+
+    // Repeater AP scan — trigger or poll scan list
+    router.post('/proxy/<host>/repeater-scan', (shelf.Request request, String host) async {
+      host = Uri.decodeComponent(host);
+      try {
+        final body = json.decode(await request.readAsString());
+        final sid = body['sid'] ?? '';
+        final action = body['action'] ?? '';
+
+        String xhrId;
+        if (action == 'trigger') {
+          xhrId = 'refresh_scanlist';
+        } else if (action == 'poll') {
+          xhrId = 'request_scanlist';
+        } else {
+          return _jsonResponse({'error': 'Invalid action: must be "trigger" or "poll"'});
+        }
+
+        final resp = await http.post(
+          Uri.parse('http://$host/data.lua'),
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/json',
+          },
+          body: 'sid=${Uri.encodeComponent(sid)}&page=wizard_meshset&xhrId=$xhrId',
+        );
+        return shelf.Response.ok(resp.body,
+            headers: {'Content-Type': 'application/json'});
+      } catch (e) {
+        return _jsonResponse({'error': 'Repeater scan failed: $e'});
+      }
+    });
+
+    // Repeater set uplink — configure repeater WiFi uplink
+    router.post('/proxy/<host>/repeater-set-uplink', (shelf.Request request, String host) async {
+      host = Uri.decodeComponent(host);
+      try {
+        final body = json.decode(await request.readAsString()) as Map<String, dynamic>;
+        final sid = body['sid'] ?? '';
+        final bssid = body['bssid'] ?? '';
+        final ssid = body['ssid'] ?? '';
+        final psk = body['psk'] ?? '';
+        final encryption = body['encryption'] ?? 'wpa2';
+
+        final formBody = 'sid=${Uri.encodeComponent(sid)}'
+            '&page=wizard_meshset'
+            '&roleType=repeater'
+            '&connectionType=wifi'
+            '&mac=${Uri.encodeComponent(bssid)}'
+            '&ssid=${Uri.encodeComponent(ssid)}'
+            '&enc=${Uri.encodeComponent(encryption)}'
+            '&pskvalue=${Uri.encodeComponent(psk)}';
+
+        final resp = await http.post(
+          Uri.parse('http://$host/data.lua'),
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/json',
+          },
+          body: formBody,
+        );
+        return shelf.Response.ok(resp.body,
+            headers: {'Content-Type': 'application/json'});
+      } catch (e) {
+        return _jsonResponse({'error': 'Set uplink failed: $e'});
       }
     });
 
