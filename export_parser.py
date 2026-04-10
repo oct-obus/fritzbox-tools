@@ -3,16 +3,22 @@
 Fritz!Box .export file parser and decryptor.
 
 Parses AVM Fritz!Box configuration export files, decrypts encrypted sections
-(CRYPTEDB64FILE, CRYPTEDBINFILE), decodes base64 sections (B64FILE), verifies
-the CRC32 footer, and optionally extracts all sections to an output directory.
+(CRYPTEDB64FILE, CRYPTEDBINFILE), decodes base64 sections (B64FILE), decodes
+$$$$-encoded credentials, verifies the CRC32 footer, and optionally extracts
+all sections to an output directory.
 
 Supports:
-  - No-password exports (default key: Xy!9>5fkv8f:-?vfv)
   - Password-protected exports (password via -p flag)
+  - Passwordless exports (device serial + MAC via --serial/--maca flags)
+  - $$$$-encoded credential decryption (two-stage AES-256-CBC)
   - avmnexus/boxcert sections with hardcoded AES-128 key
 
-Key derivation: MD5(password) → 16 bytes, zero-padded to 32 → AES-256-CBC.
-IV is read from the Password= header field (hex-encoded, 16 bytes).
+$$$$-encoding:
+  1. Password= header contains a random export key, encrypted with a bootstrap key
+  2. Bootstrap key = MD5(password)[:16] + 16×0x00 (password-protected exports)
+     or MD5(serial + "\\n" + maca + "\\n")[:16] + 16×0x00 (passwordless exports)
+  3. Each $$$$-value: AVM-Base32-decode → [16-byte IV | AES-256-CBC ciphertext]
+  4. Decrypted format: [4-byte MD5 check | 4-byte BE length | plaintext data]
 """
 
 from __future__ import annotations
@@ -43,6 +49,12 @@ try:
         unpadder = PKCS7(128).unpadder()
         return unpadder.update(padded) + unpadder.finalize()
 
+    def _aes_cbc_decrypt_raw(key: bytes, iv: bytes, ciphertext: bytes) -> bytes:
+        """AES-CBC decrypt without PKCS7 unpadding (for $$$$-encoded values)."""
+        cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
+        decryptor = cipher.decryptor()
+        return decryptor.update(ciphertext) + decryptor.finalize()
+
     HAS_CRYPTO = True
 except ImportError:
     HAS_CRYPTO = False
@@ -53,11 +65,18 @@ except ImportError:
             "Install it with: pip install cryptography"
         )
 
+    def _aes_cbc_decrypt_raw(key: bytes, iv: bytes, ciphertext: bytes) -> bytes:
+        raise RuntimeError(
+            "The 'cryptography' package is required for decryption. "
+            "Install it with: pip install cryptography"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 DEFAULT_PASSWORD = "Xy!9>5fkv8f:-?vfv"
+AVM_B32_CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"
 
 # Hardcoded AES-128 key for avmnexus / boxcert sections
 AVMNEXUS_KEY = bytes([
@@ -76,6 +95,137 @@ END_OF_FILE_RE = re.compile(r"^\*{4}\s+END OF FILE\s+\*{4}")
 END_OF_EXPORT_RE = re.compile(r"^\*{4}\s+END OF EXPORT\s+([0-9A-Fa-f]{8})\s+\*{4}")
 
 IMPORT_KEY_RE = re.compile(r"/\*ImportKey=([0-9A-Fa-f]+)\*/")
+
+
+# ---------------------------------------------------------------------------
+# AVM Base32 encoding (charset: A-Z, 1-6 instead of standard 2-7)
+# ---------------------------------------------------------------------------
+def avm_b32_decode(data: str) -> bytes:
+    """Decode AVM's custom Base32 encoding."""
+    result = bytearray()
+    buf = 0
+    bits = 0
+    for ch in data:
+        idx = AVM_B32_CHARSET.find(ch)
+        if idx < 0:
+            continue
+        buf = (buf << 5) | idx
+        bits += 5
+        while bits >= 8:
+            bits -= 8
+            result.append((buf >> bits) & 0xFF)
+    return bytes(result)
+
+
+# ---------------------------------------------------------------------------
+# $$$$-encoded credential decryption
+# ---------------------------------------------------------------------------
+def derive_bootstrap_key(
+    password: Optional[str] = None,
+    serial: Optional[str] = None,
+    maca: Optional[str] = None,
+) -> Optional[bytes]:
+    """Derive the 32-byte bootstrap key for decrypting the Password= header.
+
+    For password-protected exports: MD5(password)[:16] + 16×0x00
+    For passwordless exports: MD5(serial + "\\n" + maca + "\\n")[:16] + 16×0x00
+    Returns None if insufficient info is provided.
+    """
+    if password is not None:
+        md5 = hashlib.md5(password.encode("utf-8")).digest()
+    elif serial is not None and maca is not None:
+        payload = serial + "\n" + maca + "\n"
+        md5 = hashlib.md5(payload.encode("utf-8")).digest()
+    else:
+        return None
+    return md5 + b"\x00" * 16
+
+
+def decrypt_dollar_value(b32_data: str, key: bytes) -> Optional[str]:
+    """Decrypt a single $$$$-encoded value (without the $$$$ prefix).
+
+    Returns the plaintext string, or None on failure.
+    """
+    raw = avm_b32_decode(b32_data)
+    if len(raw) < 16:
+        return None
+
+    iv = raw[:16]
+    ct = raw[16:]
+    # Truncate to 16-byte boundary (AES block size); excess bytes are base32 padding
+    if len(ct) % 16 != 0:
+        ct = ct[: len(ct) - (len(ct) % 16)]
+    if len(ct) == 0:
+        return None
+
+    try:
+        dec = _aes_cbc_decrypt_raw(key, iv, ct)
+    except Exception:
+        return None
+
+    if len(dec) < 8:
+        return None
+
+    # Verify MD5 integrity check (first 4 bytes = MD5(rest)[:4])
+    stored_hash = dec[:4]
+    calc_hash = hashlib.md5(dec[4:]).digest()[:4]
+    if stored_hash != calc_hash:
+        return None
+
+    data_length = struct.unpack(">I", dec[4:8])[0]
+    data = dec[8:]
+    if data_length > len(data):
+        return None
+
+    result = data[:data_length]
+    return result.rstrip(b"\x00").decode("utf-8", errors="replace")
+
+
+def derive_export_key(password_field: str, bootstrap_key: bytes) -> Optional[bytes]:
+    """Decrypt the Password= header to obtain the per-export encryption key.
+
+    Returns a 32-byte AES key (first 16 bytes of decrypted data + 16×0x00),
+    or None on failure.
+    """
+    b32_data = password_field
+    if b32_data.startswith("$$$$"):
+        b32_data = b32_data[4:]
+
+    raw = avm_b32_decode(b32_data)
+    if len(raw) < 16:
+        return None
+
+    iv = raw[:16]
+    ct = raw[16:]
+    if len(ct) % 16 != 0:
+        ct = ct[: len(ct) - (len(ct) % 16)]
+    if len(ct) == 0:
+        return None
+
+    try:
+        dec = _aes_cbc_decrypt_raw(bootstrap_key, iv, ct)
+    except Exception:
+        return None
+
+    if len(dec) < 8:
+        return None
+
+    # Verify MD5
+    stored_hash = dec[:4]
+    calc_hash = hashlib.md5(dec[4:]).digest()[:4]
+    if stored_hash != calc_hash:
+        return None
+
+    data_length = struct.unpack(">I", dec[4:8])[0]
+    if data_length < 16:
+        return None
+
+    key_data = dec[8 : 8 + data_length]
+    # Export key = first 16 bytes + 16 zero bytes
+    return key_data[:16] + b"\x00" * 16
+
+
+DOLLAR_RE = re.compile(r'\$\$\$\$[A-Z1-6]+')
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +255,8 @@ class ExportFile:
     crc_expected: str = ""
     crc_actual: str = ""
     crc_ok: bool = False
+    export_key: Optional[bytes] = None  # derived from Password= header
+    decoded_credentials: dict = field(default_factory=dict)  # path -> [(key, plaintext)]
 
 
 # ---------------------------------------------------------------------------
@@ -282,8 +434,11 @@ def parse_export(text: str, verbose: bool = False) -> ExportFile:
 def process_export(
     filepath: str,
     password: Optional[str] = None,
+    serial: Optional[str] = None,
+    maca: Optional[str] = None,
     output_dir: Optional[str] = None,
     verbose: bool = False,
+    decode_secrets: bool = False,
 ) -> None:
     path = Path(filepath)
     if not path.is_file():
@@ -311,12 +466,12 @@ def process_export(
     elif not iv:
         iv = b"\x00" * 16  # placeholder — not used for unencrypted exports
 
-    # Derive AES key
+    # Derive AES key for encrypted sections (CRYPTEDB64FILE, CRYPTEDBINFILE)
     pw = password if password is not None else DEFAULT_PASSWORD
     aes_key = derive_key(pw)
     if verbose:
         using = "user-supplied" if password is not None else "default"
-        print(f"  Using {using} password for key derivation")
+        print(f"  Using {using} password for section key derivation")
         print(f"  AES key (hex): {aes_key.hex()}")
         print(f"  IV (hex):      {iv.hex()}")
 
@@ -326,6 +481,52 @@ def process_export(
         decrypt_section(sec, aes_key, iv, verbose=verbose)
         if sec.kind.startswith("CRYPTED"):
             encrypted_count += 1
+
+    # $$$$-encoded credential decryption
+    pw_field = export.header.fields.get("Password", "")
+    if (decode_secrets or password or (serial and maca)) and pw_field:
+        bootstrap_key = derive_bootstrap_key(
+            password=password, serial=serial, maca=maca
+        )
+        if bootstrap_key is not None:
+            if verbose:
+                if password:
+                    print(f"  Deriving export key from export password...")
+                else:
+                    print(f"  Deriving export key from serial={serial} maca={maca}...")
+                print(f"  Bootstrap key: {bootstrap_key.hex()}")
+
+            export_key = derive_export_key(pw_field, bootstrap_key)
+            if export_key is not None:
+                export.export_key = export_key
+                if verbose:
+                    print(f"  ✓ Export key derived: {export_key[:16].hex()}...")
+
+                # Decode all $$$$-values in CFGFILE sections
+                total_decoded = 0
+                for sec in export.sections:
+                    if sec.kind != "CFGFILE" or sec.decrypted is None:
+                        continue
+                    content = sec.decrypted.decode("utf-8", errors="replace")
+                    matches = DOLLAR_RE.findall(content)
+                    if not matches:
+                        continue
+                    decoded_pairs = []
+                    for match in matches:
+                        plaintext = decrypt_dollar_value(match[4:], export_key)
+                        if plaintext is not None:
+                            decoded_pairs.append((match, plaintext))
+                            total_decoded += 1
+                    if decoded_pairs:
+                        export.decoded_credentials[sec.path] = decoded_pairs
+                print(f"  Decoded {total_decoded} $$$$-encoded credentials across "
+                      f"{len(export.decoded_credentials)} section(s)")
+            else:
+                print("  ✗ Failed to derive export key — wrong password or serial/maca?",
+                      file=sys.stderr)
+        else:
+            if verbose:
+                print("  No bootstrap key info provided — skipping $$$$-decryption")
 
     # CRC check
     if export.crc_expected:
@@ -400,6 +601,16 @@ def process_export(
                 except UnicodeDecodeError:
                     print(f"  <binary data, {len(sec.decrypted)} bytes>")
 
+        # Show decoded $$$$-credentials
+        if export.decoded_credentials:
+            print(f"\n{'='*60}")
+            print("Decoded $$$$-encoded credentials:")
+            print(f"{'='*60}")
+            for sec_path, pairs in export.decoded_credentials.items():
+                print(f"\n--- {sec_path} ---")
+                for encoded, plaintext in pairs:
+                    print(f"  {plaintext}")
+
     if not HAS_CRYPTO and encrypted_count > 0:
         print(
             "\nNote: 'cryptography' package not installed – "
@@ -419,7 +630,17 @@ def main() -> None:
     parser.add_argument(
         "-p", "--password",
         default=None,
-        help="Export password (omit for default key)",
+        help="Export password (for password-protected exports)",
+    )
+    parser.add_argument(
+        "--serial",
+        default=None,
+        help="Device serial number (for passwordless exports, from urlader env)",
+    )
+    parser.add_argument(
+        "--maca",
+        default=None,
+        help="Device MAC address (for passwordless exports, from urlader env)",
     )
     parser.add_argument(
         "-o", "--output",
@@ -432,13 +653,21 @@ def main() -> None:
         action="store_true",
         help="Show detailed parsing info",
     )
+    parser.add_argument(
+        "--decode-secrets",
+        action="store_true",
+        help="Force $$$$-credential decryption (requires -p or --serial/--maca)",
+    )
 
     args = parser.parse_args()
     process_export(
         filepath=args.export_file,
         password=args.password,
+        serial=args.serial,
+        maca=args.maca,
         output_dir=args.output,
         verbose=args.verbose,
+        decode_secrets=args.decode_secrets,
     )
 
 
